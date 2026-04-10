@@ -1,4 +1,4 @@
-app = "CHANGE_ME_FLY_APP_NAME"
+app = "raphamedical"
 primary_region = "sin"
 
 [build]
