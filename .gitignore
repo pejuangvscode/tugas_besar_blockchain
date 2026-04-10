@@ -1,0 +1,24 @@
+# Node
+node_modules/
+frontend/node_modules/
+circuits/node_modules/
+
+# Build output
+artifacts/
+cache/
+frontend/dist/
+circuits/build/
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/.pytest_cache/
+
+# Environment
+.env
+backend/.env
+frontend/.env
+
+# OS
+.DS_Store
+Thumbs.db

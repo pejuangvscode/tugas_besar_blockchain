@@ -1,0 +1,8 @@
+fastapi==0.115.4
+uvicorn[standard]==0.32.0
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+cryptography==43.0.3
+eth-account==0.13.4
+python-dotenv==1.0.1
+pydantic==2.9.2
