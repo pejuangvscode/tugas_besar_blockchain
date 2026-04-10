@@ -62,6 +62,19 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 API docs:
 - http://localhost:8000/docs
 
+### Deploy Backend via GitHub to Fly.io
+
+1. Edit [backend/fly.toml](backend/fly.toml) and set `app` to your Fly app name.
+2. Create a Fly API token:
+  - `fly tokens create deploy`
+3. Add repository secret in GitHub:
+  - Name: `FLY_API_TOKEN`
+  - Value: your Fly deploy token
+4. Commit and push to `main`.
+5. GitHub Actions workflow [ .github/workflows/deploy-backend-fly.yml ](.github/workflows/deploy-backend-fly.yml) will deploy backend automatically.
+
+The workflow deploys only when backend files or the workflow file itself changes.
+
 ## 3) Frontend Module (React)
 
 ### Setup and run
