@@ -66,12 +66,17 @@ API docs:
 
 1. Edit [backend/fly.toml](backend/fly.toml) and set `app` to your Fly app name.
 2. Create a Fly API token:
-  - `fly tokens create deploy`
+   - `fly tokens create deploy`
 3. Add repository secret in GitHub:
-  - Name: `FLY_API_TOKEN`
-  - Value: your Fly deploy token
-4. Commit and push to `main`.
-5. GitHub Actions workflow [ .github/workflows/deploy-backend-fly.yml ](.github/workflows/deploy-backend-fly.yml) will deploy backend automatically.
+   - Name: `FLY_API_TOKEN`
+   - Value: your Fly deploy token
+4. Set Fly runtime secrets (once) so backend can boot in production:
+   - `fly secrets set DATABASE_URL=...`
+   - `fly secrets set CONTRACT_ADDRESS=...`
+   - `fly secrets set SEPOLIA_CHAIN_ID=11155111`
+   - `fly secrets set FRONTEND_ORIGIN=https://your-vercel-domain.vercel.app`
+5. Commit and push to `main`.
+6. GitHub Actions workflow [.github/workflows/deploy-backend-fly.yml](.github/workflows/deploy-backend-fly.yml) will deploy backend automatically.
 
 The workflow deploys only when backend files or the workflow file itself changes.
 
