@@ -30,7 +30,7 @@ export default function App() {
       <header className="sticky top-0 z-20 border-b border-white/15 bg-slate-950/40 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <Link to="/" className="font-heading text-xl font-bold tracking-tight text-white">
-            RAPHA<span className="gradient-text">MEDICAL</span>
+            RAPHA<span className="gradient-text">Medical</span>
           </Link>
 
           <nav className="flex items-center gap-2">
