@@ -174,7 +174,7 @@ export default function DoctorDashboard() {
             disabled={isSubmitting}
             className="rounded-full bg-gradient-to-r from-cyan-300 to-orange-300 px-6 py-3 text-sm font-extrabold text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-70"
           >
-            {isSubmitting ? "Submitting & Anchoring..." : "Encrypt + Build Merkle + Anchor"}
+            {isSubmitting ? "Submitting & Anchoring..." : "Anchor"}
           </button>
         </form>
       </article>
