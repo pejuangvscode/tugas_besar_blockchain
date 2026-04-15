@@ -123,12 +123,39 @@ This produces and copies:
 - `frontend/public/zk/medical_proof_final.zkey`
 - `frontend/public/zk/verification_key.json`
 
+## 5) Selective Disclosure Blueprint (New)
+
+This repository now includes implementation-ready selective disclosure design artifacts:
+
+- Blueprint spec: `docs/selective-disclosure-blueprint.md`
+   - Exact private/public signal model
+   - Commitment and nullifier strategy
+   - Contract verification flow template
+- API examples: `docs/selective-disclosure-api-examples.json`
+   - Prove/verify request-response payload templates
+- Solidity template: `contracts/SelectiveDisclosureVerifierManager.sol`
+   - Claim-type verifier dispatch
+   - Root consistency check against `MedicalRecordRegistry`
+   - Nullifier replay protection
+- Groth16 adapter template: `contracts/Groth16VerifierAdapter.sol`
+   - Adapts snarkjs-style proof bytes into fixed Groth16 verifier ABI
+
+Selective circuit skeleton compile (R1CS + SYM):
+
+```powershell
+cd circuits
+./build-selective.ps1
+```
+
 ## API Endpoints
 
 - `POST /records/create`
 - `GET /records/{patient_address}`
+- `GET /records/public/{patient_address}`
 - `POST /records/verify`
 - `PATCH /records/merkle_root/tx_hash`
+- `POST /selective-disclosure/prove` (stub)
+- `POST /selective-disclosure/verify` (stub)
 
 ## Security/Design Notes
 

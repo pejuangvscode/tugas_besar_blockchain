@@ -14,6 +14,7 @@ load_dotenv(ROOT_DIR / ".env", override=False)
 from models.database import create_tables
 from routes.records import router as records_router
 from routes.roles import router as roles_router
+from routes.selective_disclosure import router as selective_disclosure_router
 
 
 app = FastAPI(
@@ -64,3 +65,8 @@ def health_check() -> dict:
 
 app.include_router(records_router, prefix="/records", tags=["records"])
 app.include_router(roles_router, prefix="/roles", tags=["roles"])
+app.include_router(
+    selective_disclosure_router,
+    prefix="/selective-disclosure",
+    tags=["selective-disclosure"],
+)

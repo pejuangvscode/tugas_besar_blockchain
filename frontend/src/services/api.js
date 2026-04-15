@@ -76,3 +76,17 @@ export function upsertWalletRole(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function proveSelectiveDisclosure(payload) {
+  return request("/selective-disclosure/prove", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function verifySelectiveDisclosure(payload) {
+  return request("/selective-disclosure/verify", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
