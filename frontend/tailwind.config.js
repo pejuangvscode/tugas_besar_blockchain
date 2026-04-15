@@ -8,7 +8,7 @@ export default {
         body: ["'Manrope'", "sans-serif"],
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(255,255,255,0.12), 0 24px 60px rgba(5,12,28,0.35)",
+        glow: "0 1px 2px rgba(15,23,42,0.06), 0 16px 32px rgba(15,23,42,0.08)",
       },
       keyframes: {
         float: {

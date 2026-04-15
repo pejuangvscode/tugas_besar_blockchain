@@ -31,6 +31,12 @@ export function getPatientRecords(patientAddress, signature, nonce) {
   });
 }
 
+export function getPublicVerificationRecords(patientAddress) {
+  return request(`/records/public/${patientAddress}`, {
+    method: "GET",
+  });
+}
+
 export function verifyRecord(payload) {
   return request("/records/verify", {
     method: "POST",

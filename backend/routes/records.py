@@ -63,6 +63,22 @@ class PatientRecordsResponse(BaseModel):
     records: List[RecordItem]
 
 
+class PublicVerificationRecordItem(BaseModel):
+    id: int
+    patient_address: str
+    doctor_address: str
+    leaf_hash: str
+    merkle_proof: Optional[List[Dict[str, str]]]
+    created_at: str
+
+
+class PublicPatientVerificationResponse(BaseModel):
+    patient_address: str
+    latest_merkle_root: Optional[str]
+    latest_tx_hash: Optional[str]
+    records: List[PublicVerificationRecordItem]
+
+
 def _assert_eth_address(value: str, field_name: str) -> str:
     if not is_address(value):
         raise HTTPException(status_code=400, detail=f"Invalid Ethereum address in {field_name}")
@@ -159,6 +175,48 @@ def get_patient_records(
         )
 
     return PatientRecordsResponse(records=records_output)
+
+
+@router.get("/public/{patient_address}", response_model=PublicPatientVerificationResponse)
+def get_public_patient_verification_records(
+    patient_address: str,
+    db: Session = Depends(get_db),
+) -> PublicPatientVerificationResponse:
+    normalized_patient = _assert_eth_address(patient_address, "patient_address")
+
+    patient_records = (
+        db.query(MedicalRecord)
+        .filter(MedicalRecord.patient_address == normalized_patient)
+        .order_by(MedicalRecord.created_at.desc())
+        .all()
+    )
+
+    latest_root_entry = (
+        db.query(MerkleRoot)
+        .filter(MerkleRoot.patient_address == normalized_patient)
+        .order_by(MerkleRoot.created_at.desc(), MerkleRoot.id.desc())
+        .first()
+    )
+
+    records_output: List[PublicVerificationRecordItem] = []
+    for record in patient_records:
+        records_output.append(
+            PublicVerificationRecordItem(
+                id=record.id,
+                patient_address=record.patient_address,
+                doctor_address=record.doctor_address,
+                leaf_hash=record.leaf_hash,
+                merkle_proof=record.merkle_proof,
+                created_at=record.created_at.isoformat(),
+            )
+        )
+
+    return PublicPatientVerificationResponse(
+        patient_address=normalized_patient,
+        latest_merkle_root=latest_root_entry.merkle_root if latest_root_entry else None,
+        latest_tx_hash=latest_root_entry.tx_hash if latest_root_entry else None,
+        records=records_output,
+    )
 
 
 @router.post("/verify", response_model=VerifyRecordResponse)

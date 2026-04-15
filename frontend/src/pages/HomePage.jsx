@@ -24,16 +24,15 @@ export default function HomePage() {
   return (
     <section className="animate-fadeInUp space-y-8">
       <div className="panel relative overflow-hidden rounded-3xl p-8 shadow-glow sm:p-12">
-        <div className="absolute -right-10 top-8 h-32 w-32 rounded-full bg-cyan-300/30 blur-3xl" />
-        <div className="absolute -left-10 bottom-2 h-36 w-36 rounded-full bg-orange-300/20 blur-3xl" />
+        <div className="absolute left-0 top-0 h-1 w-36 rounded-r-full bg-sky-600" />
 
-        <p className="mb-3 inline-flex rounded-full border border-cyan-200/50 bg-cyan-200/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.16em] text-cyan-100">
+        <p className="mb-3 inline-flex rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs font-bold uppercase tracking-[0.16em] text-slate-700">
           Decentralized Medical Ledger
         </p>
-        <h1 className="max-w-3xl font-heading text-4xl font-bold leading-tight sm:text-5xl">
+        <h1 className="max-w-3xl font-heading text-4xl font-bold leading-tight text-slate-900 sm:text-5xl">
           Clinical records that stay private, verifiable, and owned by patients.
         </h1>
-        <p className="mt-4 max-w-2xl text-base text-slate-200 sm:text-lg">
+        <p className="mt-4 max-w-2xl text-base text-slate-600 sm:text-lg">
           A full-stack DApp combining AES encryption, Merkle integrity proofs, Ethereum anchoring,
           and zk-SNARK certificates for trust-minimized healthcare record workflows.
         </p>
@@ -41,19 +40,19 @@ export default function HomePage() {
         <div className="mt-8 flex flex-wrap gap-3">
           <Link
             to="/doctor"
-            className="rounded-full bg-cyan-300 px-5 py-3 text-sm font-bold text-slate-950 transition hover:bg-cyan-200"
+            className="rounded-full bg-sky-600 px-5 py-3 text-sm font-bold text-slate-50 transition hover:bg-sky-700"
           >
             Open Doctor Page
           </Link>
           <Link
             to="/patient"
-            className="rounded-full border border-white/25 bg-white/10 px-5 py-3 text-sm font-bold text-white transition hover:bg-white/20"
+            className="rounded-full border border-slate-300 bg-white px-5 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-100"
           >
             Open Patient Page
           </Link>
           <Link
             to="/verifier"
-            className="rounded-full border border-orange-200/40 bg-orange-300/10 px-5 py-3 text-sm font-bold text-orange-100 transition hover:bg-orange-300/20"
+            className="rounded-full border border-slate-300 bg-slate-900 px-5 py-3 text-sm font-bold text-slate-50 transition hover:bg-slate-700"
           >
             Open Third-Party Verifier
           </Link>
@@ -67,8 +66,8 @@ export default function HomePage() {
             className="panel rounded-2xl p-5 shadow-glow animate-fadeInUp"
             style={{ animationDelay: `${index * 100}ms` }}
           >
-            <h2 className="font-heading text-xl font-semibold text-white">{pillar.title}</h2>
-            <p className="mt-2 text-sm leading-relaxed text-slate-200">{pillar.description}</p>
+            <h2 className="font-heading text-xl font-semibold text-slate-900">{pillar.title}</h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-600">{pillar.description}</p>
           </article>
         ))}
       </div>

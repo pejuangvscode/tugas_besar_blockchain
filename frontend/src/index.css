@@ -3,13 +3,13 @@
 @tailwind utilities;
 
 :root {
-  --bg-deep: #08111f;
-  --bg-mid: #10213e;
-  --bg-soft: #1d3a58;
-  --accent-ice: #8ef9ff;
-  --accent-coral: #ff8552;
-  --text-main: #f4fbff;
-  --text-muted: #adc5d8;
+  --bg-page: #f4f7fb;
+  --bg-card: #ffffff;
+  --bg-soft: #edf2f8;
+  --border-main: #d8e2ec;
+  --accent-main: #2563eb;
+  --text-main: #10223b;
+  --text-muted: #5b6c81;
 }
 
 * {
@@ -21,11 +21,10 @@ body {
   min-height: 100vh;
   font-family: "Manrope", sans-serif;
   color: var(--text-main);
-  background:
-    radial-gradient(circle at 10% 20%, rgba(142, 249, 255, 0.18), transparent 36%),
-    radial-gradient(circle at 86% 15%, rgba(255, 133, 82, 0.24), transparent 36%),
-    radial-gradient(circle at 40% 84%, rgba(33, 118, 255, 0.22), transparent 42%),
-    linear-gradient(135deg, var(--bg-deep), var(--bg-mid) 56%, var(--bg-soft));
+  background-color: var(--bg-page);
+  background-image:
+    radial-gradient(circle at 100% 0%, rgba(37, 99, 235, 0.09), transparent 28%),
+    radial-gradient(circle at 0% 100%, rgba(14, 165, 233, 0.06), transparent 24%);
   background-attachment: fixed;
 }
 
@@ -34,21 +33,97 @@ body {
 }
 
 .panel {
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.03));
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  backdrop-filter: blur(14px);
+  background: var(--bg-card);
+  border: 1px solid var(--border-main);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
 }
 
 .soft-grid {
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
   background-size: 28px 28px;
 }
 
 .gradient-text {
-  background: linear-gradient(90deg, var(--accent-ice), #ffffff 52%, var(--accent-coral));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--accent-main);
+}
+
+[class*="text-white"] {
+  color: var(--text-main) !important;
+}
+
+[class*="text-slate-100"],
+[class*="text-slate-200"] {
+  color: #334155 !important;
+}
+
+[class*="text-slate-300"],
+[class*="text-slate-400"] {
+  color: var(--text-muted) !important;
+}
+
+[class*="border-white/"] {
+  border-color: var(--border-main) !important;
+}
+
+[class*="bg-white/5"],
+[class*="bg-white/10"],
+[class*="bg-white/15"],
+[class*="bg-white/20"] {
+  background-color: #f8fbff !important;
+}
+
+[class*="bg-slate-950/"],
+[class*="bg-slate-900/"] {
+  background-color: var(--bg-soft) !important;
+}
+
+[class*="text-cyan-100"] {
+  color: #0369a1 !important;
+}
+
+[class*="text-orange-100"] {
+  color: #9a3412 !important;
+}
+
+[class*="text-violet-100"] {
+  color: #5b21b6 !important;
+}
+
+[class*="text-emerald-100"] {
+  color: #047857 !important;
+}
+
+[class*="bg-cyan-300/10"] {
+  background-color: #e0ecff !important;
+}
+
+[class*="bg-orange-300/10"],
+[class*="bg-orange-200/10"] {
+  background-color: #fff3e7 !important;
+}
+
+[class*="bg-violet-300/10"] {
+  background-color: #f0ebff !important;
+}
+
+[class*="bg-emerald-300/10"],
+[class*="bg-emerald-400/10"] {
+  background-color: #eafbf4 !important;
+}
+
+[class*="bg-red-500/10"],
+[class*="bg-red-400/10"] {
+  background-color: #fff1f2 !important;
+}
+
+[class*="text-red-100"] {
+  color: #b91c1c !important;
+}
+
+[class*="bg-gradient-to-r"][class*="from-cyan-300"][class*="to-orange-300"] {
+  background-image: none !important;
+  background-color: var(--accent-main) !important;
+  color: #ffffff !important;
 }
