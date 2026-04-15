@@ -21,11 +21,30 @@ app = FastAPI(
     description="FastAPI backend for encrypted medical record anchoring and integrity verification.",
 )
 
-frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+
+def _build_allowed_origins() -> list[str]:
+    configured = os.getenv("FRONTEND_ORIGIN", "")
+
+    # Support a comma-separated FRONTEND_ORIGIN and keep local dev origins always enabled.
+    origins = {
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    }
+
+    if configured:
+        for item in configured.split(","):
+            origin = item.strip()
+            if origin:
+                origins.add(origin)
+
+    return sorted(origins)
+
+
+allowed_origins = _build_allowed_origins()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend_origin, "http://127.0.0.1:5173"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
