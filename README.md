@@ -33,6 +33,33 @@ npm run deploy:sepolia
 - `frontend/.env` as `VITE_CONTRACT_ADDRESS`
 - `backend/.env` as `CONTRACT_ADDRESS`
 
+### Deploy Selective Disclosure Contracts (Optional, for new selective flow)
+
+Use this only when enabling selective disclosure claim verification.
+
+1. Ensure `CONTRACT_ADDRESS` (or `REGISTRY_ADDRESS`) points to deployed `MedicalRecordRegistry`.
+2. (Optional) Set `SELECTIVE_OWNER_ADDRESS` if manager owner is not the deployer wallet.
+3. (Optional) Set base Groth16 verifier addresses if already deployed:
+   - `HAS_CATEGORY_GROTH16_VERIFIER_ADDRESS`
+   - `LAB_IN_RANGE_GROTH16_VERIFIER_ADDRESS`
+   - `NO_DISEASE_GROTH16_VERIFIER_ADDRESS`
+4. Deploy selective contracts:
+
+```bash
+npm run deploy:selective:sepolia
+```
+
+Deployment output includes:
+- `SELECTIVE_MANAGER_ADDRESS`
+- optional adapter addresses per claim type
+
+If `SELECTIVE_OWNER_ADDRESS` differs from deployer address, adapter binding (`setVerifier`) must be executed by owner wallet.
+
+After deployment, update runtime envs/secrets as needed:
+- Root `.env`: keep `CONTRACT_ADDRESS`, add `SELECTIVE_MANAGER_ADDRESS`
+- `backend/.env`: keep `CONTRACT_ADDRESS`, add `SELECTIVE_MANAGER_ADDRESS`
+- `frontend/.env`: keep `VITE_CONTRACT_ADDRESS`, add `VITE_SELECTIVE_MANAGER_ADDRESS` (if frontend integration uses manager)
+
 ## 2) Backend Module (FastAPI)
 
 ### Setup
