@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 
 import { useMetaMask } from "../hooks/useMetaMask";
-import { createRecord, updateMerkleRootTxHash } from "../services/api";
+import { createRecord, getPatientWallets, updateMerkleRootTxHash } from "../services/api";
 import { getBrowserProvider, getRegistryContract } from "../services/contract";
 import { buildCreateRecordTypedData, signTypedData } from "../services/eip712";
 
@@ -60,6 +60,7 @@ function upsertPatientBookEntry(book, address, label) {
 }
 
 export default function DoctorDashboard() {
+  const [patientType, setPatientType] = useState("existing");
   const [patientAddress, setPatientAddress] = useState("");
   const [patientLabel, setPatientLabel] = useState("");
   const [rawText, setRawText] = useState("");
@@ -68,6 +69,9 @@ export default function DoctorDashboard() {
   const [bookMessage, setBookMessage] = useState("");
   const [result, setResult] = useState(null);
   const [patientBook, setPatientBook] = useState(() => loadPatientBook());
+  const [detectedPatients, setDetectedPatients] = useState([]);
+  const [isLoadingDetectedPatients, setIsLoadingDetectedPatients] = useState(false);
+  const [detectedPatientsError, setDetectedPatientsError] = useState("");
 
   const {
     account,
@@ -82,9 +86,68 @@ export default function DoctorDashboard() {
 
   const requiredNetworkLabel = requiredChainId === 11155111 ? "Sepolia" : `Chain ${requiredChainId}`;
 
+  const detectedPatientOptions = useMemo(() => {
+    const labelsByAddress = new Map(
+      patientBook.map((entry) => [entry.address.toLowerCase(), entry.label])
+    );
+
+    return detectedPatients
+      .filter((wallet) => typeof wallet === "string" && wallet)
+      .map((wallet) => ({
+        address: wallet,
+        label: labelsByAddress.get(wallet.toLowerCase()) || `Patient ${truncateAddress(wallet)}`,
+      }));
+  }, [detectedPatients, patientBook]);
+
+  const selectedDetectedPatientAddress = useMemo(() => {
+    const lowerPatientAddress = patientAddress.toLowerCase();
+    const selected = detectedPatientOptions.find(
+      (entry) => entry.address.toLowerCase() === lowerPatientAddress
+    );
+
+    return selected ? selected.address : "";
+  }, [patientAddress, detectedPatientOptions]);
+
+  const loadDetectedPatients = useCallback(async () => {
+    try {
+      setIsLoadingDetectedPatients(true);
+      setDetectedPatientsError("");
+
+      const response = await getPatientWallets();
+      const patients = Array.isArray(response?.patients) ? response.patients : [];
+      setDetectedPatients(patients);
+    } catch (error) {
+      setDetectedPatientsError(error?.message || "Failed to load patient wallets from backend.");
+    } finally {
+      setIsLoadingDetectedPatients(false);
+    }
+  }, []);
+
   useEffect(() => {
     persistPatientBook(patientBook);
   }, [patientBook]);
+
+  useEffect(() => {
+    void loadDetectedPatients();
+  }, [loadDetectedPatients]);
+
+  useEffect(() => {
+    if (patientType !== "existing") {
+      return;
+    }
+
+    if (detectedPatientOptions.length === 0) {
+      return;
+    }
+
+    if (selectedDetectedPatientAddress) {
+      return;
+    }
+
+    const firstPatient = detectedPatientOptions[0];
+    setPatientAddress(firstPatient.address);
+    setPatientLabel(firstPatient.label);
+  }, [patientType, detectedPatientOptions, selectedDetectedPatientAddress]);
 
   const explorerLink = useMemo(() => {
     if (!result?.tx_hash) return "";
@@ -106,10 +169,26 @@ export default function DoctorDashboard() {
       return;
     }
 
+    if (patientType === "existing" && !selectedDetectedPatientAddress) {
+      setErrorMessage("Select an existing patient from the dropdown first.");
+      return;
+    }
+
+    if (patientType === "new" && !patientAddress.trim()) {
+      setErrorMessage("Enter new patient wallet address first.");
+      return;
+    }
+
+    let normalizedPatient = "";
+    try {
+      normalizedPatient = ethers.getAddress(patientAddress.trim());
+    } catch {
+      setErrorMessage("Patient wallet address is not valid.");
+      return;
+    }
+
     try {
       setIsSubmitting(true);
-
-      const normalizedPatient = ethers.getAddress(patientAddress.trim());
       const nonce = `${Date.now()}`;
       const typedData = buildCreateRecordTypedData({
         patientAddress: normalizedPatient,
@@ -152,6 +231,8 @@ export default function DoctorDashboard() {
       );
       setBookMessage(`Saved ${fallbackLabel} to quick patient list.`);
 
+      void loadDetectedPatients();
+
       setRawText("");
     } catch (error) {
       setErrorMessage(error?.message || "Failed to submit and anchor record.");
@@ -174,9 +255,51 @@ export default function DoctorDashboard() {
   };
 
   const handleUseSavedPatient = (entry) => {
+    setPatientType("new");
     setPatientAddress(entry.address);
     setPatientLabel(entry.label);
     setBookMessage(`Selected ${entry.label}.`);
+    setErrorMessage("");
+  };
+
+  const handleSelectPatientType = (nextType) => {
+    setPatientType(nextType);
+    setErrorMessage("");
+
+    if (nextType === "existing") {
+      if (detectedPatientOptions.length === 0) {
+        setPatientAddress("");
+        setBookMessage("No existing patient found yet. Switch to New Patient.");
+        return;
+      }
+
+      const selected =
+        detectedPatientOptions.find(
+          (entry) => entry.address.toLowerCase() === patientAddress.toLowerCase()
+        ) || detectedPatientOptions[0];
+
+      setPatientAddress(selected.address);
+      setPatientLabel(selected.label);
+      setBookMessage(`Selected ${selected.label}.`);
+      return;
+    }
+
+    setPatientAddress("");
+    setBookMessage("Enter a new patient wallet address manually.");
+  };
+
+  const handleSelectDetectedPatient = (address) => {
+    setPatientAddress(address);
+
+    const selected = detectedPatientOptions.find(
+      (entry) => entry.address.toLowerCase() === address.toLowerCase()
+    );
+    if (selected) {
+      setPatientLabel(selected.label);
+      setBookMessage(`Selected ${selected.label}.`);
+    }
+
+    setErrorMessage("");
   };
 
   const handleRemoveSavedPatient = (address) => {
@@ -245,6 +368,36 @@ export default function DoctorDashboard() {
 
         <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
           <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
+            <p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-300">Patient Type</p>
+
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => handleSelectPatientType("existing")}
+                className={`rounded-xl border px-4 py-3 text-left text-sm font-semibold transition ${
+                  patientType === "existing"
+                    ? "border-cyan-200/70 bg-cyan-400/20 text-cyan-100"
+                    : "border-white/20 bg-slate-950/30 text-slate-200 hover:bg-slate-900/50"
+                }`}
+              >
+                Existing Patient
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSelectPatientType("new")}
+                className={`rounded-xl border px-4 py-3 text-left text-sm font-semibold transition ${
+                  patientType === "new"
+                    ? "border-cyan-200/70 bg-cyan-400/20 text-cyan-100"
+                    : "border-white/20 bg-slate-950/30 text-slate-200 hover:bg-slate-900/50"
+                }`}
+              >
+                New Patient
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
             <p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-300">
               Quick Patient List
             </p>
@@ -281,24 +434,61 @@ export default function DoctorDashboard() {
             )}
           </div>
 
-          <label className="block">
-            <span className="mb-2 block text-sm font-semibold text-slate-100">Patient Wallet</span>
-            <input
-              list="saved-patient-addresses"
-              value={patientAddress}
-              onChange={(event) => setPatientAddress(event.target.value)}
-              placeholder="0x..."
-              className="w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-cyan-200/70"
-              required
-            />
-            <datalist id="saved-patient-addresses">
-              {patientBook.map((entry) => (
-                <option key={entry.address} value={entry.address}>
-                  {entry.label}
-                </option>
-              ))}
-            </datalist>
-          </label>
+          {patientType === "existing" ? (
+            <label className="block">
+              <span className="mb-2 block text-sm font-semibold text-slate-100">
+                Existing Patient Wallets (Supabase)
+              </span>
+
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                <select
+                  value={selectedDetectedPatientAddress}
+                  onChange={(event) => handleSelectDetectedPatient(event.target.value)}
+                  className="w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-sm text-white outline-none focus:border-cyan-200/70"
+                  required
+                  disabled={isLoadingDetectedPatients || detectedPatientOptions.length === 0}
+                >
+                  <option value="">Select patient from backend list...</option>
+                  {detectedPatientOptions.map((entry) => (
+                    <option key={entry.address} value={entry.address}>
+                      {entry.label} ({truncateAddress(entry.address)})
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => void loadDetectedPatients()}
+                  className="rounded-xl border border-cyan-200/60 bg-cyan-300/10 px-4 py-3 text-sm font-bold text-cyan-100 hover:bg-cyan-300/20"
+                >
+                  {isLoadingDetectedPatients ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+
+              <p className="mt-2 text-xs text-slate-300">
+                {isLoadingDetectedPatients
+                  ? "Loading patient wallets from backend..."
+                  : `${detectedPatientOptions.length} patient wallet(s) detected.`}
+              </p>
+
+              {detectedPatientsError && (
+                <p className="mt-2 text-xs text-red-200">{detectedPatientsError}</p>
+              )}
+            </label>
+          ) : (
+            <label className="block">
+              <span className="mb-2 block text-sm font-semibold text-slate-100">
+                New Patient Wallet Address
+              </span>
+              <input
+                value={patientAddress}
+                onChange={(event) => setPatientAddress(event.target.value)}
+                placeholder="0x..."
+                className="w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-cyan-200/70"
+                required
+              />
+            </label>
+          )}
 
           <label className="block">
             <span className="mb-2 block text-sm font-semibold text-slate-100">

@@ -46,7 +46,20 @@ export function updateMerkleRootTxHash(payload) {
 }
 
 export function getWalletRole(walletAddress) {
-  return request(`/roles/${walletAddress}`, {
+  return request(`/roles/wallet/${walletAddress}`, {
+    method: "GET",
+  });
+}
+
+export function getPatientWallets(query = "") {
+  const params = new URLSearchParams();
+  if (query.trim()) {
+    params.set("q", query.trim());
+  }
+
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+
+  return request(`/roles/patients${suffix}`, {
     method: "GET",
   });
 }
