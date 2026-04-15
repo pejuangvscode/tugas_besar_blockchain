@@ -1,31 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { ethers } from "ethers";
+import { useSearchParams } from "react-router-dom";
 
 import { getReadOnlyProvider, getRegistryContract } from "../services/contract";
 import { verifyMerkleProofInBrowser } from "../services/merkle";
 import { decodeVerificationToken } from "../services/verificationToken";
-import { verifyMedicalCertificate } from "../services/zkp";
-
-const PACKAGE_PLACEHOLDER = `{
-  "patient_address": "0x...",
-  "leaf_hash": "0x...",
-  "merkle_proof": [
-    { "position": "right", "hash": "0x..." }
-  ],
-  "merkle_root": "0x...",
-  "tx_hash": "0x..."
-}`;
 
 function toLowerHex(value) {
   return String(value || "").toLowerCase();
-}
-
-function readJson(text, label) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`Invalid ${label} JSON.`);
-  }
 }
 
 function normalizeVerificationPackage(rawPackage) {
@@ -49,91 +31,71 @@ function normalizeVerificationPackage(rawPackage) {
 }
 
 export default function ThirdPartyVerifierPage() {
-  const [tokenText, setTokenText] = useState("");
-  const [packageText, setPackageText] = useState("");
-  const [certificateText, setCertificateText] = useState("");
+  const [searchParams] = useSearchParams();
+  const [verificationPackage, setVerificationPackage] = useState(null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [infoMessage, setInfoMessage] = useState("");
   const [result, setResult] = useState(null);
 
-  const summary = useMemo(() => {
-    if (!result) return null;
-
-    const checks = [];
-    checks.push({
-      label: "Merkle proof matches on-chain root",
-      value: result.merkleProofValid,
-    });
-
-    if (result.claimedRootMatch !== null) {
-      checks.push({
-        label: "Claimed merkle_root matches on-chain root",
-        value: result.claimedRootMatch,
-      });
+  useEffect(() => {
+    const token = searchParams.get("token") || "";
+    if (!token) {
+      setVerificationPackage(null);
+      setInfoMessage("No verification token found in this URL. Ask patient to share verifier QR link.");
+      setErrorMessage("");
+      return;
     }
 
-    if (result.certificateVerified !== null) {
-      checks.push({
-        label: "ZK certificate verified",
-        value: result.certificateVerified,
-      });
-    }
+    try {
+      const decoded = decodeVerificationToken(token);
+      const normalized = normalizeVerificationPackage(decoded);
 
-    return checks;
-  }, [result]);
+      setVerificationPackage(normalized);
+      setErrorMessage("");
+      setInfoMessage("Verification package loaded from shared patient link.");
+    } catch (error) {
+      setVerificationPackage(null);
+      setErrorMessage(error?.message || "Failed to decode verification token.");
+      setInfoMessage("");
+    }
+  }, [searchParams]);
 
   const handleVerify = async () => {
+    if (!verificationPackage) {
+      return;
+    }
+
     try {
       setIsVerifying(true);
       setErrorMessage("");
       setResult(null);
 
-      let parsedPackage;
-      if (packageText.trim()) {
-        parsedPackage = readJson(packageText, "verification package");
-      } else if (tokenText.trim()) {
-        parsedPackage = decodeVerificationToken(tokenText);
-      } else {
-        throw new Error("Provide verification package JSON or token from QR.");
-      }
-
-      const pkg = normalizeVerificationPackage(parsedPackage);
-
       const provider = await getReadOnlyProvider();
       const contract = getRegistryContract(provider);
-      const onChainRoot = await contract.getRoot(pkg.patient_address);
+      const onChainRoot = await contract.getRoot(verificationPackage.patient_address);
 
       const merkleProofValid = verifyMerkleProofInBrowser(
-        pkg.leaf_hash,
-        pkg.merkle_proof || [],
+        verificationPackage.leaf_hash,
+        verificationPackage.merkle_proof || [],
         onChainRoot
       );
 
-      let claimedRootMatch = null;
-      if (pkg.merkle_root) {
-        claimedRootMatch = toLowerHex(pkg.merkle_root) === toLowerHex(onChainRoot);
-      }
+      const claimedRoot = verificationPackage.merkle_root || "";
+      const claimedRootMatch = claimedRoot
+        ? toLowerHex(claimedRoot) === toLowerHex(onChainRoot)
+        : null;
 
-      let certificateVerified = null;
-      if (certificateText.trim()) {
-        const parsedCertificate = readJson(certificateText, "certificate");
-        certificateVerified = await verifyMedicalCertificate(parsedCertificate);
-      }
-
-      const isValid =
-        merkleProofValid &&
-        (claimedRootMatch === null || claimedRootMatch === true) &&
-        (certificateVerified === null || certificateVerified === true);
+      const isValid = merkleProofValid && (claimedRootMatch === null || claimedRootMatch === true);
 
       setResult({
         isValid,
-        patientAddress: pkg.patient_address,
+        patientAddress: verificationPackage.patient_address,
         onChainRoot,
-        claimedRoot: pkg.merkle_root || "",
+        claimedRoot,
         claimedRootMatch,
         merkleProofValid,
-        certificateVerified,
-        txHash: pkg.tx_hash || "",
+        txHash: verificationPackage.tx_hash || "",
       });
     } catch (error) {
       setErrorMessage(error?.message || "Verification failed.");
@@ -147,105 +109,46 @@ export default function ThirdPartyVerifierPage() {
       <article className="panel rounded-3xl p-6 shadow-glow sm:p-8">
         <h1 className="font-heading text-3xl font-bold text-white">Third-Party Verification Page</h1>
         <p className="mt-2 max-w-3xl text-sm text-slate-200">
-          This page is designed for insurers or external reviewers to validate patient data integrity
-          against on-chain Merkle roots. You can verify with just a verification package, and add an
-          optional ZK certificate check.
+          One simple flow: open patient shared verifier link, then click verify. No manual JSON paste.
         </p>
 
-        <label className="mt-5 block">
-          <span className="mb-2 block text-sm font-semibold text-slate-100">
-            Verification Token from QR (Optional)
-          </span>
-          <textarea
-            value={tokenText}
-            onChange={(event) => setTokenText(event.target.value)}
-            placeholder="SMR1.eyJwYXRpZW50X2FkZHJlc3MiOiIweC4uLiJ9"
-            className="min-h-24 w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-xs text-white outline-none placeholder:text-slate-400 focus:border-violet-200/70"
-          />
-
-          <div className="mt-3 flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                try {
-                  const decodedPackage = decodeVerificationToken(tokenText);
-                  setPackageText(JSON.stringify(decodedPackage, null, 2));
-                  setErrorMessage("");
-                } catch (error) {
-                  setErrorMessage(error?.message || "Failed to decode verification token.");
-                }
-              }}
-              className="rounded-full border border-violet-200/60 bg-violet-300/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.08em] text-violet-100 hover:bg-violet-300/20"
-            >
-              Decode Token to JSON
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setTokenText("");
-              }}
-              className="rounded-full border border-white/25 bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/20"
-            >
-              Clear Token
-            </button>
-          </div>
-        </label>
-
-        <div className="mt-5 grid gap-4 lg:grid-cols-2">
-          <label className="block">
-            <span className="mb-2 block text-sm font-semibold text-slate-100">
-              Verification Package (JSON)
-            </span>
-            <textarea
-              value={packageText}
-              onChange={(event) => setPackageText(event.target.value)}
-              placeholder={PACKAGE_PLACEHOLDER}
-              className="min-h-64 w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-xs text-white outline-none placeholder:text-slate-400 focus:border-cyan-200/70"
-            />
-          </label>
-
-          <label className="block">
-            <span className="mb-2 block text-sm font-semibold text-slate-100">
-              Optional ZK Certificate (JSON)
-            </span>
-            <textarea
-              value={certificateText}
-              onChange={(event) => setCertificateText(event.target.value)}
-              placeholder='{"public_signals": [...], "proof": {...}}'
-              className="min-h-64 w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-xs text-white outline-none placeholder:text-slate-400 focus:border-orange-200/70"
-            />
-          </label>
+        <div className="mt-5 rounded-2xl border border-white/15 bg-white/5 p-4 text-sm text-slate-100">
+          <p>
+            <strong>Patient:</strong> {verificationPackage?.patient_address || "-"}
+          </p>
+          <p className="mt-2 break-all">
+            <strong>Leaf Hash:</strong> {verificationPackage?.leaf_hash || "-"}
+          </p>
+          <p className="mt-2 break-all">
+            <strong>Claimed Root:</strong> {verificationPackage?.merkle_root || "-"}
+          </p>
+          {verificationPackage?.tx_hash && (
+            <p className="mt-2 break-all">
+              <strong>Tx Hash:</strong> {verificationPackage.tx_hash}
+            </p>
+          )}
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={handleVerify}
-            disabled={isVerifying}
+            disabled={isVerifying || !verificationPackage}
             className="rounded-full bg-gradient-to-r from-cyan-300 to-orange-300 px-5 py-2 text-sm font-extrabold text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-70"
           >
             {isVerifying ? "Verifying..." : "Verify Package"}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setTokenText("");
-              setPackageText("");
-              setCertificateText("");
-              setResult(null);
-              setErrorMessage("");
-            }}
-            className="rounded-full border border-white/25 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/20"
-          >
-            Reset
           </button>
         </div>
 
         {errorMessage && (
           <div className="mt-4 rounded-xl border border-red-200/40 bg-red-500/10 p-3 text-sm text-red-100">
             {errorMessage}
+          </div>
+        )}
+
+        {infoMessage && (
+          <div className="mt-4 rounded-xl border border-cyan-200/40 bg-cyan-400/10 p-3 text-sm text-cyan-100">
+            {infoMessage}
           </div>
         )}
       </article>
@@ -286,20 +189,32 @@ export default function ThirdPartyVerifierPage() {
             <div className="rounded-2xl border border-white/15 bg-white/5 p-4 text-sm text-slate-100">
               <p className="mb-2 font-semibold">Checks</p>
               <ul className="space-y-2">
-                {summary?.map((item) => (
-                  <li key={item.label} className="flex items-center justify-between gap-3">
-                    <span>{item.label}</span>
+                <li className="flex items-center justify-between gap-3">
+                  <span>Merkle proof matches on-chain root</span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs font-bold uppercase ${
+                      result.merkleProofValid
+                        ? "bg-emerald-300/20 text-emerald-100"
+                        : "bg-red-300/20 text-red-100"
+                    }`}
+                  >
+                    {result.merkleProofValid ? "pass" : "fail"}
+                  </span>
+                </li>
+                {result.claimedRootMatch !== null && (
+                  <li className="flex items-center justify-between gap-3">
+                    <span>Claimed root matches on-chain root</span>
                     <span
                       className={`rounded-full px-2 py-0.5 text-xs font-bold uppercase ${
-                        item.value
+                        result.claimedRootMatch
                           ? "bg-emerald-300/20 text-emerald-100"
                           : "bg-red-300/20 text-red-100"
                       }`}
                     >
-                      {item.value ? "pass" : "fail"}
+                      {result.claimedRootMatch ? "pass" : "fail"}
                     </span>
                   </li>
-                ))}
+                )}
               </ul>
             </div>
           </div>

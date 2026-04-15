@@ -94,9 +94,15 @@ Open:
 - http://localhost:5173
 
 Available UI pages:
-- `/doctor` → Doctor Page (create record, anchor Merkle root)
-- `/patient` → Patient Page (load/decrypt records, integrity verify, export verification package)
-- `/verifier` → Third-Party Verifier Page (validate package against on-chain root, optional ZK cert check)
+- `/doctor` → Doctor Page (create record, anchor Merkle root, quick patient list)
+- `/patient` → Patient Page (load/decrypt records, integrity verify, share package as JSON/QR/link)
+- `/verifier` → Third-Party Verifier Page (single flow: verify from patient shared link)
+
+Wallet role routing:
+- User connects wallet first.
+- App reads wallet role from backend (`doctor`, `patient`, `verifier`).
+- User is redirected automatically to role page.
+- If wallet has no role yet, app shows a one-time role selection and stores it in database.
 
 ## 4) Circuit + ZK Artifacts
 
@@ -153,14 +159,11 @@ Allow third parties to verify that patient data commitment is valid and untamper
 ### How to use in UI
 
 1. Patient opens `/patient` and loads records.
-2. Patient can choose one of two share modes:
-   - `Export Verification Package` (JSON file)
-   - `Show QR Token` (QR image + compact token text)
-3. Third party opens `/verifier` and provides either:
-   - package JSON, or
-   - token from QR (`SMR1...`) and click `Decode Token to JSON`
-4. Verifier checks on-chain root via smart contract `getRoot(patient)` and validates Merkle proof.
-5. Optional: paste `zk_certificate.json` to run additional Groth16 certificate verification.
+2. Patient clicks `Show QR Token`.
+3. Third party scans QR (or opens shared verifier link).
+4. Verifier page auto-loads package from URL token.
+5. Third party clicks `Verify Package`.
+6. App checks on-chain root via smart contract `getRoot(patient)` and validates Merkle proof.
 
 ### Validation logic
 
@@ -193,5 +196,13 @@ CREATE TABLE merkle_roots (
   merkle_root TEXT NOT NULL,
   tx_hash TEXT,
   created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE wallet_roles (
+   id SERIAL PRIMARY KEY,
+   wallet_address TEXT NOT NULL UNIQUE,
+   role TEXT NOT NULL,
+   created_at TIMESTAMP DEFAULT NOW(),
+   updated_at TIMESTAMP DEFAULT NOW()
 );
 ```

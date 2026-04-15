@@ -172,8 +172,10 @@ export default function PatientDashboard() {
       const onChainRoot = await getOnChainRootForAccount();
       const verificationPackage = buildVerificationPackage(record, onChainRoot);
       const token = encodeVerificationToken(verificationPackage);
+      const verifierUrl = new URL("/verifier", window.location.origin);
+      verifierUrl.searchParams.set("token", token);
 
-      const qrImageDataUrl = await QRCode.toDataURL(token, {
+      const qrImageDataUrl = await QRCode.toDataURL(verifierUrl.toString(), {
         width: 280,
         margin: 1,
         errorCorrectionLevel: "M",
@@ -182,6 +184,7 @@ export default function PatientDashboard() {
       setShareQr({
         recordId: record.id,
         token,
+        verifierUrl: verifierUrl.toString(),
         qrImageDataUrl,
       });
     } catch (error) {
@@ -199,6 +202,17 @@ export default function PatientDashboard() {
       setCopyStatus("Token copied. Paste it in Third-Party Verifier page.");
     } catch {
       setCopyStatus("Unable to access clipboard. Copy token manually from the text box.");
+    }
+  };
+
+  const copyVerifierLink = async () => {
+    if (!shareQr?.verifierUrl) return;
+
+    try {
+      await navigator.clipboard.writeText(shareQr.verifierUrl);
+      setCopyStatus("Verifier link copied. Open it on third-party device.");
+    } catch {
+      setCopyStatus("Unable to access clipboard. Copy verifier link manually.");
     }
   };
 
@@ -365,8 +379,8 @@ export default function PatientDashboard() {
         <article className="panel rounded-3xl p-6 shadow-glow sm:p-8">
           <h2 className="font-heading text-2xl font-bold text-white">Third-Party Share QR</h2>
           <p className="mt-2 text-sm text-slate-200">
-            Share this QR code to insurers or other reviewers. They can decode the token in the
-            Third-Party Verifier page to load the verification package automatically.
+            Share this QR code to insurers or other reviewers. Scanning it opens the verifier page
+            with the token attached, so they can load verification data instantly.
           </p>
 
           <div className="mt-5 grid gap-6 lg:grid-cols-[300px_1fr]">
@@ -380,6 +394,13 @@ export default function PatientDashboard() {
             </div>
 
             <div>
+              <p className="text-sm font-semibold text-slate-100">Verifier Link</p>
+              <textarea
+                readOnly
+                value={shareQr.verifierUrl}
+                className="mt-2 min-h-20 w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-xs text-slate-200"
+              />
+
               <p className="text-sm font-semibold text-slate-100">Verification Token</p>
               <textarea
                 readOnly
@@ -390,8 +411,25 @@ export default function PatientDashboard() {
               <div className="mt-3 flex flex-wrap gap-3">
                 <button
                   type="button"
-                  onClick={copyQrToken}
+                  onClick={copyVerifierLink}
+                  className="rounded-full border border-violet-200/60 bg-violet-300/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.08em] text-violet-100 hover:bg-violet-300/20"
+                >
+                  Copy Verifier Link
+                </button>
+
+                <a
+                  href={shareQr.verifierUrl}
+                  target="_blank"
+                  rel="noreferrer"
                   className="rounded-full border border-cyan-200/60 bg-cyan-300/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.08em] text-cyan-100 hover:bg-cyan-300/20"
+                >
+                  Open Verifier Link
+                </a>
+
+                <button
+                  type="button"
+                  onClick={copyQrToken}
+                  className="rounded-full border border-white/40 bg-white/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.08em] text-white hover:bg-white/20"
                 >
                   Copy Token
                 </button>

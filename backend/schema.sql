@@ -15,3 +15,11 @@ CREATE TABLE merkle_roots (
   tx_hash TEXT,
   created_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE wallet_roles (
+  id SERIAL PRIMARY KEY,
+  wallet_address TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
+);

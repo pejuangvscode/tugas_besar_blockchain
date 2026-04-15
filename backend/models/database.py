@@ -46,6 +46,16 @@ class MerkleRoot(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class WalletRole(Base):
+    __tablename__ = "wallet_roles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    wallet_address = Column(Text, nullable=False, unique=True, index=True)
+    role = Column(String(32), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
 

@@ -73,6 +73,31 @@ def build_patient_access_typed_data(patient_address: str, nonce: str) -> Dict:
     }
 
 
+def build_wallet_role_typed_data(wallet_address: str, role: str, nonce: str) -> Dict:
+    return {
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "version", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+                {"name": "verifyingContract", "type": "address"},
+            ],
+            "WalletRole": [
+                {"name": "wallet", "type": "address"},
+                {"name": "role", "type": "string"},
+                {"name": "nonce", "type": "string"},
+            ],
+        },
+        "primaryType": "WalletRole",
+        "domain": _domain_data(),
+        "message": {
+            "wallet": wallet_address,
+            "role": role,
+            "nonce": nonce,
+        },
+    }
+
+
 def recover_typed_data_signer(typed_data: Dict, signature: str) -> str:
     encoded_message = encode_typed_data(full_message=typed_data)
     signer_address = Account.recover_message(encoded_message, signature=signature)

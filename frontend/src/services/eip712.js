@@ -67,6 +67,31 @@ export function buildPatientAccessTypedData({ patientAddress, nonce }) {
   };
 }
 
+export function buildWalletRoleTypedData({ walletAddress, role, nonce }) {
+  return {
+    types: {
+      EIP712Domain: [
+        { name: "name", type: "string" },
+        { name: "version", type: "string" },
+        { name: "chainId", type: "uint256" },
+        { name: "verifyingContract", type: "address" },
+      ],
+      WalletRole: [
+        { name: "wallet", type: "address" },
+        { name: "role", type: "string" },
+        { name: "nonce", type: "string" },
+      ],
+    },
+    primaryType: "WalletRole",
+    domain: buildDomain(),
+    message: {
+      wallet: ethers.getAddress(walletAddress),
+      role,
+      nonce,
+    },
+  };
+}
+
 export async function signTypedData(signerAddress, typedData) {
   if (!window.ethereum) {
     throw new Error("MetaMask is not available in this browser.");

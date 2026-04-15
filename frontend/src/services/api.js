@@ -44,3 +44,16 @@ export function updateMerkleRootTxHash(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function getWalletRole(walletAddress) {
+  return request(`/roles/${walletAddress}`, {
+    method: "GET",
+  });
+}
+
+export function upsertWalletRole(payload) {
+  return request("/roles/upsert", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
