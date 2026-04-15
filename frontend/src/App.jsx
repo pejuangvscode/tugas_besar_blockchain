@@ -3,6 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import DoctorDashboard from "./pages/DoctorDashboard";
 import HomePage from "./pages/HomePage";
 import PatientDashboard from "./pages/PatientDashboard";
+import ThirdPartyVerifierPage from "./pages/ThirdPartyVerifierPage";
 
 function NavLink({ to, label }) {
   const location = useLocation();
@@ -34,8 +35,9 @@ export default function App() {
           </Link>
 
           <nav className="flex items-center gap-2">
-            <NavLink to="/doctor" label="Doctor" />
-            <NavLink to="/patient" label="Patient" />
+            <NavLink to="/doctor" label="Doctor Page" />
+            <NavLink to="/patient" label="Patient Page" />
+            <NavLink to="/verifier" label="Third-Party Verifier" />
           </nav>
         </div>
       </header>
@@ -45,6 +47,7 @@ export default function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/doctor" element={<DoctorDashboard />} />
           <Route path="/patient" element={<PatientDashboard />} />
+          <Route path="/verifier" element={<ThirdPartyVerifierPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

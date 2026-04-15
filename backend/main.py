@@ -1,7 +1,15 @@
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+
+BACKEND_DIR = Path(__file__).resolve().parent
+ROOT_DIR = BACKEND_DIR.parent
+load_dotenv(BACKEND_DIR / ".env", override=False)
+load_dotenv(ROOT_DIR / ".env", override=False)
 
 from models.database import create_tables
 from routes.records import router as records_router

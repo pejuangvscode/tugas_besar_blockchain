@@ -13,6 +13,11 @@ const pillars = [
     title: "Privacy Proofs",
     description: "Generate zero-knowledge certificates without exposing the underlying note text.",
   },
+  {
+    title: "Third-Party Validation",
+    description:
+      "Insurers and auditors can validate integrity packages against on-chain roots.",
+  },
 ];
 
 export default function HomePage() {
@@ -38,18 +43,24 @@ export default function HomePage() {
             to="/doctor"
             className="rounded-full bg-cyan-300 px-5 py-3 text-sm font-bold text-slate-950 transition hover:bg-cyan-200"
           >
-            Open Doctor Dashboard
+            Open Doctor Page
           </Link>
           <Link
             to="/patient"
             className="rounded-full border border-white/25 bg-white/10 px-5 py-3 text-sm font-bold text-white transition hover:bg-white/20"
           >
-            Open Patient Dashboard
+            Open Patient Page
+          </Link>
+          <Link
+            to="/verifier"
+            className="rounded-full border border-orange-200/40 bg-orange-300/10 px-5 py-3 text-sm font-bold text-orange-100 transition hover:bg-orange-300/20"
+          >
+            Open Third-Party Verifier
           </Link>
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {pillars.map((pillar, index) => (
           <article
             key={pillar.title}

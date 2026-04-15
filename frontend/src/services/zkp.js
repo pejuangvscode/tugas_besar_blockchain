@@ -59,3 +59,26 @@ export function downloadCertificateJson(filename, certificate) {
 
   URL.revokeObjectURL(url);
 }
+
+export async function verifyMedicalCertificate(certificate) {
+  if (!certificate || typeof certificate !== "object") {
+    throw new Error("Invalid certificate payload.");
+  }
+
+  if (!certificate.proof || !certificate.public_signals) {
+    throw new Error("Certificate must include proof and public_signals.");
+  }
+
+  const verificationKey = await fetch("/zk/verification_key.json").then((response) => {
+    if (!response.ok) {
+      throw new Error("Failed to load verification key. Build circuit artifacts first.");
+    }
+    return response.json();
+  });
+
+  return snarkjs.groth16.verify(
+    verificationKey,
+    certificate.public_signals,
+    certificate.proof
+  );
+}

@@ -101,7 +101,7 @@ export default function DoctorDashboard() {
   return (
     <section className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
       <article className="panel rounded-3xl p-6 shadow-glow sm:p-8 animate-fadeInUp">
-        <h1 className="font-heading text-3xl font-bold text-white">Doctor Dashboard</h1>
+        <h1 className="font-heading text-3xl font-bold text-white">Doctor Page</h1>
         <p className="mt-2 text-sm text-slate-200">
           Create encrypted patient notes, produce Merkle proofs, and anchor the latest root on
           Ethereum Sepolia.

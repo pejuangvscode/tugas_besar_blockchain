@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import QRCode from "qrcode";
 
 import { useMetaMask } from "../hooks/useMetaMask";
 import { getPatientRecords } from "../services/api";
@@ -6,6 +7,7 @@ import { getBrowserProvider, getRegistryContract } from "../services/contract";
 import { decryptRawText } from "../services/crypto";
 import { buildPatientAccessTypedData, signTypedData } from "../services/eip712";
 import { verifyMerkleProofInBrowser } from "../services/merkle";
+import { encodeVerificationToken } from "../services/verificationToken";
 import { downloadCertificateJson, generateMedicalProof } from "../services/zkp";
 
 function truncateAddress(address) {
@@ -19,6 +21,10 @@ export default function PatientDashboard() {
   const [errorMessage, setErrorMessage] = useState("");
   const [verificationStatus, setVerificationStatus] = useState({});
   const [zkBusyRecordId, setZkBusyRecordId] = useState(null);
+  const [packageBusyRecordId, setPackageBusyRecordId] = useState(null);
+  const [shareQr, setShareQr] = useState(null);
+  const [isPreparingQr, setIsPreparingQr] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
 
   const { account, connectWallet, switchWalletAccount, isConnecting, walletError } = useMetaMask();
 
@@ -58,6 +64,7 @@ export default function PatientDashboard() {
 
       setRecords(decryptedRecords);
       setVerificationStatus({});
+      setShareQr(null);
     } catch (error) {
       setErrorMessage(error?.message || "Failed to load patient records.");
     } finally {
@@ -103,13 +110,98 @@ export default function PatientDashboard() {
     }
   };
 
+  const getOnChainRootForAccount = async () => {
+    const provider = await getBrowserProvider();
+    const contract = getRegistryContract(provider);
+    return contract.getRoot(account);
+  };
+
+  const buildVerificationPackage = (record, onChainRoot) => ({
+    package_version: "1.0",
+    generated_at: new Date().toISOString(),
+    patient_address: account,
+    doctor_address: record.doctor_address,
+    record_id: record.id,
+    leaf_hash: record.leaf_hash,
+    merkle_proof: record.merkle_proof || [],
+    merkle_root: onChainRoot,
+    contract_address: import.meta.env.VITE_CONTRACT_ADDRESS || "",
+    chain_id: Number(import.meta.env.VITE_SEPOLIA_CHAIN_ID || 11155111),
+    tx_hash: record.tx_hash || "",
+  });
+
+  const exportVerificationPackage = async (record) => {
+    try {
+      setPackageBusyRecordId(record.id);
+      setErrorMessage("");
+
+      const onChainRoot = await getOnChainRootForAccount();
+      const verificationPackage = buildVerificationPackage(record, onChainRoot);
+
+      downloadCertificateJson(`verification-package-record-${record.id}.json`, verificationPackage);
+    } catch (error) {
+      setErrorMessage(error?.message || "Failed to export verification package.");
+    } finally {
+      setPackageBusyRecordId(null);
+    }
+  };
+
+  const prepareVerificationQr = async (record) => {
+    try {
+      setIsPreparingQr(true);
+      setCopyStatus("");
+      setErrorMessage("");
+
+      const onChainRoot = await getOnChainRootForAccount();
+      const verificationPackage = buildVerificationPackage(record, onChainRoot);
+      const token = encodeVerificationToken(verificationPackage);
+
+      const qrImageDataUrl = await QRCode.toDataURL(token, {
+        width: 280,
+        margin: 1,
+        errorCorrectionLevel: "M",
+      });
+
+      setShareQr({
+        recordId: record.id,
+        token,
+        qrImageDataUrl,
+      });
+    } catch (error) {
+      setErrorMessage(error?.message || "Failed to generate share QR.");
+    } finally {
+      setIsPreparingQr(false);
+    }
+  };
+
+  const copyQrToken = async () => {
+    if (!shareQr?.token) return;
+
+    try {
+      await navigator.clipboard.writeText(shareQr.token);
+      setCopyStatus("Token copied. Paste it in Third-Party Verifier page.");
+    } catch {
+      setCopyStatus("Unable to access clipboard. Copy token manually from the text box.");
+    }
+  };
+
+  const downloadQrImage = () => {
+    if (!shareQr?.qrImageDataUrl) return;
+
+    const anchor = document.createElement("a");
+    anchor.href = shareQr.qrImageDataUrl;
+    anchor.download = `verification-qr-record-${shareQr.recordId}.png`;
+    anchor.click();
+  };
+
   return (
     <section className="space-y-6 animate-fadeInUp">
       <article className="panel rounded-3xl p-6 shadow-glow sm:p-8">
-        <h1 className="font-heading text-3xl font-bold text-white">Patient Dashboard</h1>
+        <h1 className="font-heading text-3xl font-bold text-white">Patient Page</h1>
         <p className="mt-2 text-sm text-slate-200">
           Authenticate with wallet signature, decrypt your records locally, and verify data integrity
-          against on-chain Merkle roots.
+          against on-chain Merkle roots. You can also export a verification package for insurers or
+          third-party reviewers.
         </p>
 
         <div className="mt-5 flex flex-wrap items-center gap-3">
@@ -170,6 +262,7 @@ export default function PatientDashboard() {
                 <th className="px-4 py-3 font-semibold">Decrypted Record</th>
                 <th className="px-4 py-3 font-semibold">Integrity</th>
                 <th className="px-4 py-3 font-semibold">ZK Certificate</th>
+                <th className="px-4 py-3 font-semibold">Third-Party Package</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
@@ -209,13 +302,36 @@ export default function PatientDashboard() {
                         {zkBusyRecordId === record.id ? "Generating..." : "Generate ZK Certificate"}
                       </button>
                     </td>
+                    <td className="px-4 py-3">
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => exportVerificationPackage(record)}
+                          disabled={packageBusyRecordId === record.id}
+                          className="rounded-full border border-emerald-200/60 bg-emerald-300/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.08em] text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-70"
+                        >
+                          {packageBusyRecordId === record.id
+                            ? "Exporting..."
+                            : "Export Verification Package"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => prepareVerificationQr(record)}
+                          disabled={isPreparingQr}
+                          className="rounded-full border border-violet-200/60 bg-violet-300/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.08em] text-violet-100 hover:bg-violet-300/20 disabled:cursor-not-allowed disabled:opacity-70"
+                        >
+                          {isPreparingQr ? "Preparing..." : "Show QR Token"}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
 
               {records.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-300">
+                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-300">
                     No records loaded yet.
                   </td>
                 </tr>
@@ -224,6 +340,67 @@ export default function PatientDashboard() {
           </table>
         </div>
       </article>
+
+      {shareQr && (
+        <article className="panel rounded-3xl p-6 shadow-glow sm:p-8">
+          <h2 className="font-heading text-2xl font-bold text-white">Third-Party Share QR</h2>
+          <p className="mt-2 text-sm text-slate-200">
+            Share this QR code to insurers or other reviewers. They can decode the token in the
+            Third-Party Verifier page to load the verification package automatically.
+          </p>
+
+          <div className="mt-5 grid gap-6 lg:grid-cols-[300px_1fr]">
+            <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
+              <img
+                src={shareQr.qrImageDataUrl}
+                alt="Verification QR"
+                className="mx-auto h-64 w-64 rounded-xl border border-white/10 bg-white p-2"
+              />
+              <p className="mt-3 text-center text-xs text-slate-300">Record #{shareQr.recordId}</p>
+            </div>
+
+            <div>
+              <p className="text-sm font-semibold text-slate-100">Verification Token</p>
+              <textarea
+                readOnly
+                value={shareQr.token}
+                className="mt-2 min-h-40 w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-xs text-slate-200"
+              />
+
+              <div className="mt-3 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={copyQrToken}
+                  className="rounded-full border border-cyan-200/60 bg-cyan-300/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.08em] text-cyan-100 hover:bg-cyan-300/20"
+                >
+                  Copy Token
+                </button>
+
+                <button
+                  type="button"
+                  onClick={downloadQrImage}
+                  className="rounded-full border border-emerald-200/60 bg-emerald-300/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.08em] text-emerald-100 hover:bg-emerald-300/20"
+                >
+                  Download QR PNG
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShareQr(null);
+                    setCopyStatus("");
+                  }}
+                  className="rounded-full border border-white/30 bg-white/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.08em] text-white hover:bg-white/20"
+                >
+                  Close
+                </button>
+              </div>
+
+              {copyStatus && <p className="mt-3 text-xs text-cyan-100">{copyStatus}</p>}
+            </div>
+          </div>
+        </article>
+      )}
     </section>
   );
 }

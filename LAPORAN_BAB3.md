@@ -457,6 +457,112 @@ Jika requirement laporan mengharuskan proof diverifikasi oleh smart contract, ma
 - ZKP certificate adalah bukti tambahan berbasis Poseidon hash yang dihasilkan di client.
 - Untuk desain yang lebih “menyatu”, public signal ZKP idealnya dihubungkan langsung dengan leaf yang masuk ke Merkle tree (misalnya leaf Merkle menggunakan Poseidon hash juga), sehingga ZKP proof dan anchor integritas merujuk pada commitment yang sama.
 
+## 3.5. Use Case Verifikasi oleh Third Party (Asuransi / Pihak Lain)
+
+### 3.5.1 Tujuan use case
+
+Use case ini menambahkan aktor **third party verifier** (misalnya perusahaan asuransi, auditor medis, atau institusi lain) yang ingin memastikan bahwa data pasien:
+
+1) benar-benar berasal dari sistem,
+2) belum dimodifikasi sejak di-anchor ke blockchain,
+3) dapat diverifikasi tanpa harus mempercayai backend secara penuh.
+
+Prinsip utamanya adalah **verifiable data sharing**: pasien tetap memegang kontrol data, sementara pihak ketiga mendapatkan bukti integritas yang bisa diverifikasi secara independen.
+
+### 3.5.2 Aktor tambahan dan perannya
+
+1) **Pasien**
+- Pemilik data.
+- Memberi persetujuan (consent) untuk membagikan paket verifikasi ke pihak ketiga.
+
+2) **Third Party Verifier (Asuransi / Institusi)**
+- Menerima paket verifikasi dari pasien.
+- Menjalankan verifikasi integritas terhadap root on-chain.
+- Tidak wajib memiliki akses langsung ke database backend.
+
+3) **Blockchain (Sepolia + Smart Contract)**
+- Menjadi sumber kebenaran publik untuk root integritas (`getRoot(patient)`).
+
+4) **Backend (opsional pada proses verifikasi)**
+- Dapat membantu menyediakan metadata, namun hasil verifikasi final tetap dapat dilakukan tanpa mempercayai backend.
+
+### 3.5.3 Paket data yang dibagikan ke third party
+
+Agar third party bisa memverifikasi validitas, pasien membagikan **verification package** yang minimal berisi:
+
+1) `patient_address`
+2) `leaf_hash` record yang diverifikasi
+3) `merkle_proof` untuk record tersebut
+4) `merkle_root` snapshot yang diklaim
+5) `tx_hash` anchoring (opsional tapi disarankan, untuk audit)
+6) (Opsional) `zk_certificate.json` jika ingin membuktikan claim tambahan berbasis ZKP
+
+Catatan privasi:
+- Untuk proses validasi integritas murni, third party **tidak harus menerima plaintext rekam medis**.
+- Jika third party perlu menilai isi medis, pasien dapat membagikan plaintext terbatas sesuai consent.
+
+### 3.5.4 Alur verifikasi third party (integritas on-chain)
+
+```mermaid
+sequenceDiagram
+  actor P as Pasien
+  actor T as Third Party (Asuransi)
+  participant SC as Smart Contract (Sepolia)
+
+  P->>T: Kirim verification package
+  T->>SC: getRoot(patient_address)
+  SC-->>T: onChainRoot
+
+  T->>T: Cek onChainRoot == merkle_root (paket)
+  T->>T: Verifikasi Merkle proof: verify(leaf_hash, merkle_proof, onChainRoot)
+  T->>T: (Opsional) Cek tx_hash di explorer untuk audit event
+  T-->>P: Hasil validasi (VALID/INVALID + alasan)
+```
+
+### 3.5.5 Logika keputusan verifikasi
+
+Third party dapat memakai aturan berikut:
+
+1) **Valid**
+- `onChainRoot` sama dengan `merkle_root` yang diklaim, dan
+- `verifyMerkleProof(leaf_hash, merkle_proof, onChainRoot)` bernilai true.
+
+2) **Invalid karena mismatch root**
+- `merkle_root` pada paket berbeda dari root on-chain saat verifikasi.
+
+3) **Invalid karena proof tidak cocok**
+- Root sama, tetapi proof gagal merekonstruksi root dari `leaf_hash`.
+
+4) **Warning audit**
+- Integritas bisa valid walaupun `tx_hash` tidak disertakan, tetapi jejak audit akan kurang kuat.
+
+### 3.5.6 Integrasi ZKP untuk third party (opsional)
+
+Jika pasien juga membagikan `zk_certificate.json`, third party dapat melakukan verifikasi tambahan:
+
+1) Muat `verification_key.json` yang sesuai versi circuit.
+2) Verifikasi `proof` dan `public_signals` dengan Groth16 verifier (off-chain).
+3) Pastikan claim yang dibuktikan oleh ZKP sesuai kebutuhan proses bisnis (misalnya bukti relasi hash tertentu).
+
+Dengan demikian third party mendapatkan dua lapis bukti:
+
+1) **Bukti integritas data**: Merkle proof terhadap root on-chain.
+2) **Bukti kriptografis tambahan**: validitas claim ZKP tanpa membuka rahasia tertentu.
+
+### 3.5.7 Batasan implementasi saat ini dan pengembangan lanjut
+
+Implementasi saat ini:
+
+1) Sudah mendukung verifikasi integritas berbasis Merkle proof + root on-chain.
+2) ZKP saat ini diverifikasi di sisi client (off-chain), belum on-chain verifier.
+
+Pengembangan yang disarankan untuk production-grade third-party verification:
+
+1) Endpoint khusus `verification package` bertanda tangan server (integrity metadata signing).
+2) Consent log terpisah (siapa mengakses apa dan kapan).
+3) Enkripsi berbasis key exchange yang lebih kuat daripada derivasi dari address.
+4) Verifier smart contract jika butuh ZKP verification on-chain.
+
 ---
 
 ## Referensi modul (opsional, untuk lampiran laporan)

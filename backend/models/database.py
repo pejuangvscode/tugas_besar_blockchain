@@ -1,11 +1,20 @@
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Generator
 
+from dotenv import load_dotenv
 from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, sessionmaker
+
+
+# Load backend/.env first, then root .env as fallback for local runs.
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = BACKEND_DIR.parent
+load_dotenv(BACKEND_DIR / ".env", override=False)
+load_dotenv(ROOT_DIR / ".env", override=False)
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/medrecords")
