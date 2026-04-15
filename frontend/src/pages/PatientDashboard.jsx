@@ -54,10 +54,20 @@ export default function PatientDashboard() {
 
       const decryptedRecords = await Promise.all(
         (response.records || []).map(async (record) => {
-          const decryptedText = await decryptRawText(record.encrypted_data, account);
+          let decryptedText = "";
+          let decryptError = "";
+
+          try {
+            decryptedText = await decryptRawText(record.encrypted_data, account);
+          } catch (error) {
+            decryptedText = "[Unable to decrypt with current wallet]";
+            decryptError = error?.message || "Decrypt failed";
+          }
+
           return {
             ...record,
             decrypted_text: decryptedText,
+            decrypt_error: decryptError,
           };
         })
       );
@@ -65,6 +75,13 @@ export default function PatientDashboard() {
       setRecords(decryptedRecords);
       setVerificationStatus({});
       setShareQr(null);
+
+      const failedDecryptCount = decryptedRecords.filter((record) => record.decrypt_error).length;
+      if (failedDecryptCount > 0) {
+        setErrorMessage(
+          `${failedDecryptCount} record(s) could not be decrypted with the connected wallet.`
+        );
+      }
     } catch (error) {
       setErrorMessage(error?.message || "Failed to load patient records.");
     } finally {
@@ -276,6 +293,9 @@ export default function PatientDashboard() {
                     </td>
                     <td className="max-w-xl px-4 py-3 text-sm leading-relaxed text-slate-100">
                       {record.decrypted_text}
+                      {record.decrypt_error && (
+                        <p className="mt-2 text-xs text-red-200">Decrypt detail: {record.decrypt_error}</p>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <button
