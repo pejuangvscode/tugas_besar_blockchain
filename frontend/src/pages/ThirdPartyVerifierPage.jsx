@@ -2,7 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import { useSearchParams } from "react-router-dom";
 
-import { getPublicVerificationRecords } from "../services/api";
+import {
+  getPublicVerificationRecords,
+  proveSelectiveDisclosure,
+  verifySelectiveDisclosure,
+} from "../services/api";
 import { getReadOnlyProvider, getRegistryContract } from "../services/contract";
 import { verifyMerkleProofInBrowser } from "../services/merkle";
 import { decodeVerificationToken } from "../services/verificationToken";
@@ -44,6 +48,20 @@ const SMALL_ACTION_CLASS =
 
 const PRIMARY_ACTION_CLASS =
   "rounded-full border border-blue-600 bg-blue-600 px-4 py-2 text-sm font-semibold text-blue-50 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60";
+
+const SELECTIVE_CLAIM_OPTIONS = [
+  { value: "HAS_CATEGORY", label: "Has Category" },
+  { value: "LAB_IN_RANGE", label: "Lab In Range" },
+  { value: "NO_DISEASE", label: "No Disease" },
+];
+
+function parseIntegerOrThrow(rawValue, fieldLabel) {
+  const parsed = Number.parseInt(String(rawValue || "").trim(), 10);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${fieldLabel} must be a valid integer.`);
+  }
+  return parsed;
+}
 
 function getStatusMeta(statusItem) {
   if (!statusItem) {
@@ -99,6 +117,25 @@ export default function ThirdPartyVerifierPage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [infoMessage, setInfoMessage] = useState("");
 
+  const [claimType, setClaimType] = useState("HAS_CATEGORY");
+  const [categoryCodeInput, setCategoryCodeInput] = useState("12");
+  const [labCodeInput, setLabCodeInput] = useState("2201");
+  const [rangeMinInput, setRangeMinInput] = useState("700");
+  const [rangeMaxInput, setRangeMaxInput] = useState("990");
+  const [diseaseCodeInput, setDiseaseCodeInput] = useState("1001");
+  const [verifierScopeInput, setVerifierScopeInput] = useState("raphamedical.verifier");
+  const [expiresAtInput, setExpiresAtInput] = useState(
+    String(Math.floor(Date.now() / 1000) + 60 * 60)
+  );
+  const [nonceInput, setNonceInput] = useState(String(Date.now()));
+
+  const [isGeneratingSelectiveProof, setIsGeneratingSelectiveProof] = useState(false);
+  const [isVerifyingSelectiveProof, setIsVerifyingSelectiveProof] = useState(false);
+  const [selectiveErrorMessage, setSelectiveErrorMessage] = useState("");
+  const [selectiveInfoMessage, setSelectiveInfoMessage] = useState("");
+  const [selectiveClaimPackage, setSelectiveClaimPackage] = useState(null);
+  const [selectiveVerifyResult, setSelectiveVerifyResult] = useState(null);
+
   useEffect(() => {
     const token = searchParams.get("token") || "";
     if (!token) {
@@ -133,6 +170,14 @@ export default function ThirdPartyVerifierPage() {
   }, [records, selectedRecordIds]);
 
   const allSelected = records.length > 0 && selectedRecordIds.length === records.length;
+  const preferredSelectiveRecord = selectedRecords[0] || records[0] || null;
+
+  useEffect(() => {
+    setSelectiveClaimPackage(null);
+    setSelectiveVerifyResult(null);
+    setSelectiveErrorMessage("");
+    setSelectiveInfoMessage("");
+  }, [activePatientAddress]);
 
   const fetchOnChainRoot = async (patientAddress) => {
     const provider = await getReadOnlyProvider();
@@ -281,6 +326,131 @@ export default function ThirdPartyVerifierPage() {
       await verifyRecords(records);
     } finally {
       setIsVerifyingAll(false);
+    }
+  };
+
+  const buildClaimParams = () => {
+    if (claimType === "HAS_CATEGORY") {
+      return {
+        category_code: parseIntegerOrThrow(categoryCodeInput, "Category code"),
+      };
+    }
+
+    if (claimType === "LAB_IN_RANGE") {
+      const rangeMin = parseIntegerOrThrow(rangeMinInput, "Range min");
+      const rangeMax = parseIntegerOrThrow(rangeMaxInput, "Range max");
+      if (rangeMin > rangeMax) {
+        throw new Error("Range min must be less than or equal to range max.");
+      }
+
+      return {
+        lab_code: parseIntegerOrThrow(labCodeInput, "Lab code"),
+        range_min: rangeMin,
+        range_max: rangeMax,
+      };
+    }
+
+    return {
+      disease_code: parseIntegerOrThrow(diseaseCodeInput, "Disease code"),
+    };
+  };
+
+  const buildWitnessBundle = () => {
+    if (!preferredSelectiveRecord) {
+      throw new Error("No witness record available. Load records first.");
+    }
+
+    const merkleProof = Array.isArray(preferredSelectiveRecord.merkle_proof)
+      ? preferredSelectiveRecord.merkle_proof
+      : [];
+
+    return {
+      record_id: preferredSelectiveRecord.id,
+      leaf_hash: preferredSelectiveRecord.leaf_hash,
+      merkle_path_siblings: merkleProof.map((step) => step.hash),
+      merkle_path_indices: merkleProof.map((step) => (step.position === "right" ? 1 : 0)),
+      root_snapshot: onChainRoot || latestStoredRoot || "",
+    };
+  };
+
+  const handleGenerateSelectiveProof = async () => {
+    try {
+      if (!activePatientAddress) {
+        throw new Error("Load patient records first.");
+      }
+
+      const expiresAt = parseIntegerOrThrow(expiresAtInput, "Expires at");
+      const verifierScope = verifierScopeInput.trim();
+      const nonce = nonceInput.trim() || String(Date.now());
+
+      if (!verifierScope) {
+        throw new Error("Verifier scope is required.");
+      }
+
+      setIsGeneratingSelectiveProof(true);
+      setSelectiveErrorMessage("");
+      setSelectiveInfoMessage("");
+
+      const payload = {
+        claim_type: claimType,
+        patient_context: {
+          patient_address: activePatientAddress,
+          verifier_scope: verifierScope,
+          expires_at: expiresAt,
+          nonce,
+        },
+        claim_params: buildClaimParams(),
+        witness_bundle: buildWitnessBundle(),
+      };
+
+      const response = await proveSelectiveDisclosure(payload);
+
+      setSelectiveClaimPackage(response);
+      setSelectiveVerifyResult(null);
+      setNonceInput(String(Date.now()));
+      setSelectiveInfoMessage("Selective disclosure proof package generated.");
+    } catch (error) {
+      setSelectiveErrorMessage(error?.message || "Failed to generate selective disclosure proof.");
+    } finally {
+      setIsGeneratingSelectiveProof(false);
+    }
+  };
+
+  const handleVerifySelectiveClaim = async () => {
+    try {
+      if (!selectiveClaimPackage) {
+        throw new Error("Generate selective claim package first.");
+      }
+
+      if (!activePatientAddress) {
+        throw new Error("Load patient records first.");
+      }
+
+      const verifierScope = verifierScopeInput.trim();
+      if (!verifierScope) {
+        throw new Error("Verifier scope is required.");
+      }
+
+      setIsVerifyingSelectiveProof(true);
+      setSelectiveErrorMessage("");
+      setSelectiveInfoMessage("");
+
+      const response = await verifySelectiveDisclosure({
+        claim_type: selectiveClaimPackage.claim_type || claimType,
+        patient_address: activePatientAddress,
+        verifier_scope: verifierScope,
+        expires_at: Number(selectiveClaimPackage.expires_at || expiresAtInput),
+        nullifier: selectiveClaimPackage.nullifier,
+        proof: selectiveClaimPackage.proof,
+        public_signals: selectiveClaimPackage.public_signals || [],
+      });
+
+      setSelectiveVerifyResult(response);
+      setSelectiveInfoMessage("Selective disclosure verification finished.");
+    } catch (error) {
+      setSelectiveErrorMessage(error?.message || "Failed to verify selective disclosure proof.");
+    } finally {
+      setIsVerifyingSelectiveProof(false);
     }
   };
 
@@ -465,6 +635,196 @@ export default function ThirdPartyVerifierPage() {
             </tbody>
           </table>
         </div>
+      </article>
+
+      <article className="panel rounded-3xl p-6 shadow-glow sm:p-8">
+        <h2 className="font-heading text-2xl font-bold text-white">Selective Disclosure Claim</h2>
+        <p className="mt-2 text-sm text-slate-200">
+          Generate proof package by claim type, then verify it through selective-disclosure API.
+        </p>
+
+        <div className="mt-5 grid gap-4 md:grid-cols-2">
+          <label className="text-sm text-slate-200">
+            Claim Type
+            <select
+              value={claimType}
+              onChange={(event) => setClaimType(event.target.value)}
+              className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+            >
+              {SELECTIVE_CLAIM_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value} className="text-slate-900">
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="text-sm text-slate-200">
+            Verifier Scope
+            <input
+              type="text"
+              value={verifierScopeInput}
+              onChange={(event) => setVerifierScopeInput(event.target.value)}
+              placeholder="company.insurance"
+              className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition placeholder:text-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+            />
+          </label>
+        </div>
+
+        {claimType === "HAS_CATEGORY" && (
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <label className="text-sm text-slate-200">
+              Category Code
+              <input
+                type="number"
+                value={categoryCodeInput}
+                onChange={(event) => setCategoryCodeInput(event.target.value)}
+                className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+              />
+            </label>
+          </div>
+        )}
+
+        {claimType === "LAB_IN_RANGE" && (
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
+            <label className="text-sm text-slate-200">
+              Lab Code
+              <input
+                type="number"
+                value={labCodeInput}
+                onChange={(event) => setLabCodeInput(event.target.value)}
+                className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+              />
+            </label>
+            <label className="text-sm text-slate-200">
+              Range Min
+              <input
+                type="number"
+                value={rangeMinInput}
+                onChange={(event) => setRangeMinInput(event.target.value)}
+                className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+              />
+            </label>
+            <label className="text-sm text-slate-200">
+              Range Max
+              <input
+                type="number"
+                value={rangeMaxInput}
+                onChange={(event) => setRangeMaxInput(event.target.value)}
+                className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+              />
+            </label>
+          </div>
+        )}
+
+        {claimType === "NO_DISEASE" && (
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <label className="text-sm text-slate-200">
+              Disease Code
+              <input
+                type="number"
+                value={diseaseCodeInput}
+                onChange={(event) => setDiseaseCodeInput(event.target.value)}
+                className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+              />
+            </label>
+          </div>
+        )}
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <label className="text-sm text-slate-200">
+            Expires At (Unix Timestamp)
+            <input
+              type="number"
+              value={expiresAtInput}
+              onChange={(event) => setExpiresAtInput(event.target.value)}
+              className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+            />
+          </label>
+
+          <label className="text-sm text-slate-200">
+            Nonce
+            <input
+              type="text"
+              value={nonceInput}
+              onChange={(event) => setNonceInput(event.target.value)}
+              className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+            />
+          </label>
+        </div>
+
+        <div className="mt-4 rounded-2xl border border-white/15 bg-white/5 p-4 text-xs text-slate-200">
+          <p>
+            <strong>Witness Source:</strong>{" "}
+            {preferredSelectiveRecord
+              ? `Record #${preferredSelectiveRecord.id} (${truncateAddress(
+                  preferredSelectiveRecord.doctor_address
+                )})`
+              : "No record available"}
+          </p>
+          <p className="mt-2 break-all">
+            <strong>Leaf Hash:</strong> {preferredSelectiveRecord?.leaf_hash || "-"}
+          </p>
+        </div>
+
+        <div className="mt-5 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => void handleGenerateSelectiveProof()}
+            disabled={isGeneratingSelectiveProof || !activePatientAddress || !preferredSelectiveRecord}
+            className={PRIMARY_ACTION_CLASS}
+          >
+            {isGeneratingSelectiveProof ? "Generating..." : "Generate Selective Proof"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleVerifySelectiveClaim()}
+            disabled={isVerifyingSelectiveProof || !selectiveClaimPackage}
+            className={PRIMARY_ACTION_CLASS}
+          >
+            {isVerifyingSelectiveProof ? "Verifying..." : "Verify Selective Claim"}
+          </button>
+        </div>
+
+        {selectiveErrorMessage && (
+          <div className="mt-4 rounded-xl border border-red-200/40 bg-red-500/10 p-3 text-sm text-red-100">
+            {selectiveErrorMessage}
+          </div>
+        )}
+
+        {selectiveInfoMessage && (
+          <div className="mt-4 rounded-xl border border-cyan-200/40 bg-cyan-400/10 p-3 text-sm text-cyan-100">
+            {selectiveInfoMessage}
+          </div>
+        )}
+
+        {selectiveClaimPackage && (
+          <div className="mt-4 rounded-2xl border border-white/15 bg-white/5 p-4">
+            <p className="text-sm font-semibold text-white">Generated Claim Package</p>
+            <pre className="mt-2 max-h-64 overflow-auto rounded-xl bg-slate-900/60 p-3 text-xs text-slate-200">
+              {JSON.stringify(selectiveClaimPackage, null, 2)}
+            </pre>
+          </div>
+        )}
+
+        {selectiveVerifyResult && (
+          <div className="mt-4 rounded-2xl border border-white/15 bg-white/5 p-4">
+            <p className="text-sm font-semibold text-white">Selective Verification Result</p>
+            <p
+              className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold uppercase tracking-[0.08em] ${
+                selectiveVerifyResult.valid
+                  ? "bg-emerald-300/20 text-emerald-100"
+                  : "bg-red-300/20 text-red-100"
+              }`}
+            >
+              {selectiveVerifyResult.valid ? "valid" : "invalid"}
+            </p>
+            <pre className="mt-2 max-h-64 overflow-auto rounded-xl bg-slate-900/60 p-3 text-xs text-slate-200">
+              {JSON.stringify(selectiveVerifyResult, null, 2)}
+            </pre>
+          </div>
+        )}
       </article>
     </section>
   );
