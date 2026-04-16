@@ -127,7 +127,7 @@ class NoDiseaseSmtSnapshot(Base):
     leaf_count = Column(Integer, nullable=False, default=0)
 
     is_active = Column(Boolean, nullable=False, default=True)
-    metadata = Column(JSONB, nullable=False, default=dict)
+    metadata_json = Column("metadata", JSONB, nullable=False, default=dict)
 
     anchored_merkle_root_id = Column(
         Integer,
@@ -158,7 +158,7 @@ class NoDiseaseSmtLeafIndex(Base):
         ForeignKey("medical_records.id", ondelete="SET NULL"),
         nullable=True,
     )
-    metadata = Column(JSONB, nullable=False, default=dict)
+    metadata_json = Column("metadata", JSONB, nullable=False, default=dict)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
