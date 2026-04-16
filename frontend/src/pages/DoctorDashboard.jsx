@@ -16,6 +16,14 @@ function truncateAddress(address) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
+function parseIntOrThrow(value, label) {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be a valid integer.`);
+  }
+  return parsed;
+}
+
 const PATIENT_BOOK_STORAGE_KEY = "smr.patientBook.v1";
 
 const SELECTIVE_CLAIM_FILTERS = [
@@ -142,6 +150,10 @@ export default function DoctorDashboard() {
   const [patientAddress, setPatientAddress] = useState("");
   const [patientLabel, setPatientLabel] = useState("");
   const [rawText, setRawText] = useState("");
+  const [diagnosisCodeInput, setDiagnosisCodeInput] = useState("1001");
+  const [categoryCodeInput, setCategoryCodeInput] = useState("12");
+  const [labCodeInput, setLabCodeInput] = useState("2201");
+  const [labValueInput, setLabValueInput] = useState("860");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [bookMessage, setBookMessage] = useState("");
@@ -326,6 +338,13 @@ export default function DoctorDashboard() {
     }
 
     try {
+      const structuredClaim = {
+        diagnosis_code: parseIntOrThrow(diagnosisCodeInput, "Diagnosis code"),
+        category_code: parseIntOrThrow(categoryCodeInput, "Category code"),
+        lab_code: parseIntOrThrow(labCodeInput, "Lab code"),
+        lab_value: parseIntOrThrow(labValueInput, "Lab value"),
+      };
+
       setIsSubmitting(true);
       const nonce = `${Date.now()}`;
       const typedData = buildCreateRecordTypedData({
@@ -333,6 +352,7 @@ export default function DoctorDashboard() {
         doctorAddress: account,
         rawText,
         nonce,
+        structuredClaim,
       });
 
       const signature = await signTypedData(account, typedData);
@@ -341,6 +361,7 @@ export default function DoctorDashboard() {
         patient_address: normalizedPatient,
         raw_text: rawText,
         doctor_address: account,
+        structured_claim: structuredClaim,
         signature,
         nonce,
       });
@@ -361,6 +382,7 @@ export default function DoctorDashboard() {
         tx_hash: tx.hash,
         merkle_root: createResponse.merkle_root,
         leaf_hash: createResponse.leaf_hash,
+        structured_claim: structuredClaim,
       });
 
       const fallbackLabel = patientLabel.trim() || `Patient ${truncateAddress(normalizedPatient)}`;
@@ -653,6 +675,49 @@ export default function DoctorDashboard() {
 
           <label className="block">
             <span className="mb-2 block text-sm font-semibold text-slate-100">
+              Structured Claim Data
+            </span>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <input
+                type="number"
+                value={diagnosisCodeInput}
+                onChange={(event) => setDiagnosisCodeInput(event.target.value)}
+                placeholder="Diagnosis code"
+                className="w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-cyan-200/70"
+                required
+              />
+              <input
+                type="number"
+                value={categoryCodeInput}
+                onChange={(event) => setCategoryCodeInput(event.target.value)}
+                placeholder="Category code"
+                className="w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-cyan-200/70"
+                required
+              />
+              <input
+                type="number"
+                value={labCodeInput}
+                onChange={(event) => setLabCodeInput(event.target.value)}
+                placeholder="Lab code"
+                className="w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-cyan-200/70"
+                required
+              />
+              <input
+                type="number"
+                value={labValueInput}
+                onChange={(event) => setLabValueInput(event.target.value)}
+                placeholder="Lab value"
+                className="w-full rounded-xl border border-white/20 bg-slate-950/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-cyan-200/70"
+                required
+              />
+            </div>
+            <p className="mt-2 text-xs text-slate-300">
+              These values are signed in EIP-712 and committed into the record leaf hash.
+            </p>
+          </label>
+
+          <label className="block">
+            <span className="mb-2 block text-sm font-semibold text-slate-100">
               Raw Clinical Note
             </span>
             <textarea
@@ -692,6 +757,12 @@ export default function DoctorDashboard() {
               <p>
                 <strong>Tx Hash:</strong> {result.tx_hash}
               </p>
+              {result.structured_claim && (
+                <p>
+                  <strong>Structured Claim:</strong>{" "}
+                  {`dx=${result.structured_claim.diagnosis_code}, cat=${result.structured_claim.category_code}, lab=${result.structured_claim.lab_code}, value=${result.structured_claim.lab_value}`}
+                </p>
+              )}
               <a
                 href={explorerLink}
                 target="_blank"

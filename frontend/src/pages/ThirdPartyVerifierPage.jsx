@@ -241,6 +241,13 @@ export default function ThirdPartyVerifierPage() {
 
   const allSelected = records.length > 0 && selectedRecordIds.length === records.length;
   const preferredSelectiveRecord = selectedRecords[0] || records[0] || null;
+  const preferredRecordClaimData = useMemo(() => {
+    if (!preferredSelectiveRecord || typeof preferredSelectiveRecord.claim_data !== "object") {
+      return {};
+    }
+
+    return preferredSelectiveRecord.claim_data || {};
+  }, [preferredSelectiveRecord]);
 
   useEffect(() => {
     setSelectiveClaimPackage(null);
@@ -402,28 +409,60 @@ export default function ThirdPartyVerifierPage() {
   };
 
   const buildClaimParams = () => {
+    const claimData = preferredRecordClaimData;
+
     if (claimType === "HAS_CATEGORY") {
+      if (claimData.category_code === undefined) {
+        throw new Error("Selected record has no category_code. Ask doctor to create structured record.");
+      }
+
+      const categoryCode = parseIntegerOrThrow(claimData.category_code, "Record category code");
+
       return {
-        category_code: parseIntegerOrThrow(categoryCodeInput, "Category code"),
+        category_code: categoryCode,
       };
     }
 
     if (claimType === "LAB_IN_RANGE") {
+      if (claimData.lab_code === undefined || claimData.lab_value === undefined) {
+        throw new Error("Selected record has no lab_code/lab_value. Ask doctor to create structured record.");
+      }
+
+      const labCode = parseIntegerOrThrow(claimData.lab_code, "Record lab code");
+      const labValue = parseIntegerOrThrow(claimData.lab_value, "Record lab value");
+
       const rangeMin = parseIntegerOrThrow(rangeMinInput, "Range min");
       const rangeMax = parseIntegerOrThrow(rangeMaxInput, "Range max");
       if (rangeMin > rangeMax) {
         throw new Error("Range min must be less than or equal to range max.");
       }
 
+      if (labValue !== null && (labValue < rangeMin || labValue > rangeMax)) {
+        throw new Error("Selected record lab value is outside the requested range.");
+      }
+
       return {
-        lab_code: parseIntegerOrThrow(labCodeInput, "Lab code"),
+        lab_code: labCode,
         range_min: rangeMin,
         range_max: rangeMax,
+        lab_value: labValue,
       };
     }
 
+    if (claimData.diagnosis_code === undefined) {
+      throw new Error("Selected record has no diagnosis_code. Ask doctor to create structured record.");
+    }
+
+    const diagnosisCode = parseIntegerOrThrow(claimData.diagnosis_code, "Record diagnosis code");
+    const diseaseCode = parseIntegerOrThrow(diseaseCodeInput, "Disease code");
+
+    if (diseaseCode === diagnosisCode) {
+      throw new Error("Disease code cannot match diagnosis code in selected record for NO_DISEASE claim.");
+    }
+
     return {
-      disease_code: parseIntegerOrThrow(diseaseCodeInput, "Disease code"),
+      disease_code: diseaseCode,
+      diagnosis_code: diagnosisCode,
     };
   };
 
@@ -439,6 +478,7 @@ export default function ThirdPartyVerifierPage() {
     return {
       record_id: preferredSelectiveRecord.id,
       leaf_hash: preferredSelectiveRecord.leaf_hash,
+      claim_data: preferredSelectiveRecord.claim_data || {},
       merkle_path_siblings: merkleProof.map((step) => step.hash),
       merkle_path_indices: merkleProof.map((step) => (step.position === "right" ? 1 : 0)),
       root_snapshot: onChainRoot || latestStoredRoot || "",
@@ -789,8 +829,13 @@ export default function ThirdPartyVerifierPage() {
               Category Code
               <input
                 type="number"
-                value={categoryCodeInput}
+                value={
+                  preferredRecordClaimData.category_code !== undefined
+                    ? String(preferredRecordClaimData.category_code)
+                    : categoryCodeInput
+                }
                 onChange={(event) => setCategoryCodeInput(event.target.value)}
+                disabled={preferredRecordClaimData.category_code !== undefined}
                 className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
               />
             </label>
@@ -803,8 +848,13 @@ export default function ThirdPartyVerifierPage() {
               Lab Code
               <input
                 type="number"
-                value={labCodeInput}
+                value={
+                  preferredRecordClaimData.lab_code !== undefined
+                    ? String(preferredRecordClaimData.lab_code)
+                    : labCodeInput
+                }
                 onChange={(event) => setLabCodeInput(event.target.value)}
+                disabled={preferredRecordClaimData.lab_code !== undefined}
                 className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
               />
             </label>
@@ -826,6 +876,19 @@ export default function ThirdPartyVerifierPage() {
                 className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
               />
             </label>
+            <label className="text-sm text-slate-200">
+              Record Lab Value
+              <input
+                type="number"
+                value={
+                  preferredRecordClaimData.lab_value !== undefined
+                    ? String(preferredRecordClaimData.lab_value)
+                    : ""
+                }
+                readOnly
+                className="mt-1 w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 outline-none"
+              />
+            </label>
           </div>
         )}
 
@@ -838,6 +901,19 @@ export default function ThirdPartyVerifierPage() {
                 value={diseaseCodeInput}
                 onChange={(event) => setDiseaseCodeInput(event.target.value)}
                 className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+              />
+            </label>
+            <label className="text-sm text-slate-200">
+              Record Diagnosis Code
+              <input
+                type="number"
+                value={
+                  preferredRecordClaimData.diagnosis_code !== undefined
+                    ? String(preferredRecordClaimData.diagnosis_code)
+                    : ""
+                }
+                readOnly
+                className="mt-1 w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 outline-none"
               />
             </label>
           </div>

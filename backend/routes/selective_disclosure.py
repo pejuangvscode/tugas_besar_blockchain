@@ -11,7 +11,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from models.database import MerkleRoot, SelectiveClaimAuditLog, SelectiveNullifierUsed, get_db
+from models.database import (
+    MedicalRecord,
+    MerkleRoot,
+    SelectiveClaimAuditLog,
+    SelectiveNullifierUsed,
+    get_db,
+)
 
 
 router = APIRouter()
@@ -147,6 +153,113 @@ def _latest_root_for_patient(patient_address: str, db: Session) -> Optional[Merk
         .order_by(MerkleRoot.created_at.desc(), MerkleRoot.id.desc())
         .first()
     )
+
+
+def _extract_claim_data_from_record(record: MedicalRecord) -> Dict[str, int]:
+    try:
+        payload = json.loads(record.encrypted_data)
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=500, detail="Corrupted encrypted payload in medical_records") from error
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="Invalid encrypted payload format in medical_records")
+
+    claim_data_raw = payload.get("claim_data", {}) if "encryption" in payload else {}
+    if not isinstance(claim_data_raw, dict):
+        claim_data_raw = {}
+
+    normalized: Dict[str, int] = {}
+    for key in ("diagnosis_code", "category_code", "lab_code", "lab_value"):
+        if key in claim_data_raw:
+            normalized[key] = _coerce_int(claim_data_raw[key], f"record.claim_data.{key}")
+
+    return normalized
+
+
+def _resolve_claim_params(
+    *,
+    claim_type: ClaimType,
+    claim_params: Dict[str, Any],
+    witness_bundle: Dict[str, Any],
+    patient_address: str,
+    db: Session,
+) -> tuple[Dict[str, int], int]:
+    record_id_raw = witness_bundle.get("record_id")
+    if record_id_raw is None:
+        raise HTTPException(status_code=400, detail="witness_bundle.record_id is required")
+
+    record_id = _coerce_int(record_id_raw, "witness_bundle.record_id")
+    record = (
+        db.query(MedicalRecord)
+        .filter(
+            MedicalRecord.id == record_id,
+            MedicalRecord.patient_address == patient_address,
+        )
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found for this patient")
+
+    record_claim_data = _extract_claim_data_from_record(record)
+    if not record_claim_data:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected record has no structured claim data. Create a new structured record from doctor dashboard.",
+        )
+
+    if claim_type == ClaimType.HAS_CATEGORY:
+        if "category_code" not in record_claim_data:
+            raise HTTPException(status_code=400, detail="Selected record does not include category_code")
+
+        record_category = record_claim_data["category_code"]
+        if "category_code" in claim_params and _coerce_int(claim_params["category_code"], "category_code") != record_category:
+            raise HTTPException(status_code=400, detail="category_code does not match selected record")
+
+        return {"category_code": record_category}, record_id
+
+    if claim_type == ClaimType.LAB_IN_RANGE:
+        if "lab_code" not in record_claim_data or "lab_value" not in record_claim_data:
+            raise HTTPException(status_code=400, detail="Selected record does not include lab_code/lab_value")
+
+        range_min = _coerce_int(claim_params.get("range_min"), "range_min")
+        range_max = _coerce_int(claim_params.get("range_max"), "range_max")
+        if range_min > range_max:
+            raise HTTPException(status_code=400, detail="range_min must be <= range_max")
+
+        record_lab_code = record_claim_data["lab_code"]
+        record_lab_value = record_claim_data["lab_value"]
+
+        if "lab_code" in claim_params and _coerce_int(claim_params["lab_code"], "lab_code") != record_lab_code:
+            raise HTTPException(status_code=400, detail="lab_code does not match selected record")
+
+        if record_lab_value < range_min or record_lab_value > range_max:
+            raise HTTPException(
+                status_code=400,
+                detail="Selected record lab_value is outside requested range",
+            )
+
+        return {
+            "lab_code": record_lab_code,
+            "range_min": range_min,
+            "range_max": range_max,
+            "lab_value": record_lab_value,
+        }, record_id
+
+    if "diagnosis_code" not in record_claim_data:
+        raise HTTPException(status_code=400, detail="Selected record does not include diagnosis_code")
+
+    disease_code = _coerce_int(claim_params.get("disease_code"), "disease_code")
+    diagnosis_code = record_claim_data["diagnosis_code"]
+    if disease_code == diagnosis_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot issue NO_DISEASE for a disease code present in selected record",
+        )
+
+    return {
+        "disease_code": disease_code,
+        "diagnosis_code": diagnosis_code,
+    }, record_id
 
 
 def _claim_keys(claim_type: ClaimType, claim_params: Dict[str, Any]) -> tuple[int, int, int]:
@@ -355,8 +468,16 @@ def prove_selective_disclosure(
     if not latest_root_entry:
         raise HTTPException(status_code=404, detail="No anchored Merkle root found for this patient")
 
+    resolved_claim_params, record_id = _resolve_claim_params(
+        claim_type=payload.claim_type,
+        claim_params=payload.claim_params,
+        witness_bundle=payload.witness_bundle,
+        patient_address=normalized_patient,
+        db=db,
+    )
+
     claim_type_id = CLAIM_TYPE_TO_ID[payload.claim_type]
-    claim_key_a, claim_key_b, claim_key_c = _claim_keys(payload.claim_type, payload.claim_params)
+    claim_key_a, claim_key_b, claim_key_c = _claim_keys(payload.claim_type, resolved_claim_params)
 
     root_int = _coerce_int(latest_root_entry.merkle_root, "record_merkle_root") % SNARK_FIELD
     patient_commitment_int = _patient_commitment_stub(normalized_patient)
@@ -390,7 +511,7 @@ def prove_selective_disclosure(
     claim_digest_payload = {
         "claim_type": payload.claim_type.value,
         "patient_address": normalized_patient,
-        "claim_params": payload.claim_params,
+        "claim_params": resolved_claim_params,
         "public_signals": public_signals,
     }
     claim_digest = hashlib.sha256(
@@ -399,14 +520,6 @@ def prove_selective_disclosure(
 
     proof_stub = "0x" + hashlib.sha256(("proof|" + claim_digest).encode("utf-8")).hexdigest()
     nullifier_hex = "0x" + format(nullifier_int, "x")
-
-    record_id: Optional[int] = None
-    record_id_raw = payload.witness_bundle.get("record_id")
-    if record_id_raw is not None:
-        try:
-            record_id = _coerce_int(record_id_raw, "witness_bundle.record_id")
-        except HTTPException:
-            record_id = None
 
     _upsert_selective_claim_audit(
         db,
@@ -419,7 +532,7 @@ def prove_selective_disclosure(
         valid=None,
         reason=None,
         onchain_root=latest_root_entry.merkle_root,
-        claim_params=payload.claim_params,
+        claim_params=resolved_claim_params,
         public_signals=public_signals,
         proof_payload={
             "proof": proof_stub,

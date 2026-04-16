@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from typing import Dict
 
@@ -20,9 +21,15 @@ def _domain_data() -> Dict:
 
 
 def build_create_record_typed_data(
-    patient_address: str, doctor_address: str, raw_text: str, nonce: str
+    patient_address: str,
+    doctor_address: str,
+    raw_text: str,
+    nonce: str,
+    structured_claim: Dict | None = None,
 ) -> Dict:
     raw_text_hash = "0x" + hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    canonical_claim = json.dumps(structured_claim or {}, sort_keys=True, separators=(",", ":"))
+    structured_claim_hash = "0x" + hashlib.sha256(canonical_claim.encode("utf-8")).hexdigest()
 
     return {
         "types": {
@@ -36,6 +43,7 @@ def build_create_record_typed_data(
                 {"name": "patient", "type": "address"},
                 {"name": "doctor", "type": "address"},
                 {"name": "rawTextHash", "type": "bytes32"},
+                {"name": "structuredClaimHash", "type": "bytes32"},
                 {"name": "nonce", "type": "string"},
             ],
         },
@@ -45,6 +53,7 @@ def build_create_record_typed_data(
             "patient": patient_address,
             "doctor": doctor_address,
             "rawTextHash": raw_text_hash,
+            "structuredClaimHash": structured_claim_hash,
             "nonce": nonce,
         },
     }

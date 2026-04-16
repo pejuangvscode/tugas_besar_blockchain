@@ -15,11 +15,23 @@ function buildDomain() {
   };
 }
 
-export function buildCreateRecordTypedData({ patientAddress, doctorAddress, rawText, nonce }) {
+function canonicalClaimHash(structuredClaim) {
+  const canonical = JSON.stringify(structuredClaim || {}, Object.keys(structuredClaim || {}).sort());
+  return ethers.sha256(ethers.toUtf8Bytes(canonical));
+}
+
+export function buildCreateRecordTypedData({
+  patientAddress,
+  doctorAddress,
+  rawText,
+  nonce,
+  structuredClaim = {},
+}) {
   const message = {
     patient: ethers.getAddress(patientAddress),
     doctor: ethers.getAddress(doctorAddress),
     rawTextHash: ethers.sha256(ethers.toUtf8Bytes(rawText)),
+    structuredClaimHash: canonicalClaimHash(structuredClaim),
     nonce,
   };
 
@@ -35,6 +47,7 @@ export function buildCreateRecordTypedData({ patientAddress, doctorAddress, rawT
         { name: "patient", type: "address" },
         { name: "doctor", type: "address" },
         { name: "rawTextHash", type: "bytes32" },
+        { name: "structuredClaimHash", type: "bytes32" },
         { name: "nonce", type: "string" },
       ],
     },
