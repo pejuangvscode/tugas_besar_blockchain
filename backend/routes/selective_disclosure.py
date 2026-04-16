@@ -117,9 +117,12 @@ def _coerce_int(value: Any, field_name: str) -> int:
 
     if isinstance(value, str):
         raw = value.strip()
-        if raw.startswith("0x"):
-            return int(raw, 16)
-        return int(raw)
+        try:
+            if raw.startswith("0x"):
+                return int(raw, 16)
+            return int(raw)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=f"Invalid numeric value for {field_name}") from error
 
     raise HTTPException(status_code=400, detail=f"Invalid numeric value for {field_name}")
 
