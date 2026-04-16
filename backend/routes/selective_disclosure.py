@@ -1,3 +1,4 @@
+import os
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -7,14 +8,16 @@ from typing import Any, Dict, List, Optional
 from eth_utils import is_address, to_checksum_address
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from models.database import MerkleRoot, get_db
+from models.database import MerkleRoot, SelectiveClaimAuditLog, SelectiveNullifierUsed, get_db
 
 
 router = APIRouter()
 
 SNARK_FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+SELECTIVE_MANAGER_ADDRESS = os.getenv("SELECTIVE_MANAGER_ADDRESS", "").strip()
 
 
 class ClaimType(str, Enum):
@@ -126,6 +129,119 @@ def _claim_keys(claim_type: ClaimType, claim_params: Dict[str, Any]) -> tuple[in
     return _coerce_int(claim_params.get("disease_code", 0), "disease_code"), 0, 0
 
 
+def _normalize_nullifier(value: Any) -> tuple[int, str]:
+    nullifier_int = _coerce_int(value, "nullifier") % SNARK_FIELD
+    return nullifier_int, "0x" + format(nullifier_int, "x")
+
+
+def _claim_params_from_signals(claim_type: ClaimType, public_signals: List[str]) -> Dict[str, int]:
+    if len(public_signals) < 4:
+        return {}
+
+    try:
+        claim_key_a = _coerce_int(public_signals[1], "public_signals[1]")
+        claim_key_b = _coerce_int(public_signals[2], "public_signals[2]")
+        claim_key_c = _coerce_int(public_signals[3], "public_signals[3]")
+    except HTTPException:
+        return {}
+
+    if claim_type == ClaimType.HAS_CATEGORY:
+        return {"category_code": claim_key_a}
+
+    if claim_type == ClaimType.LAB_IN_RANGE:
+        return {
+            "lab_code": claim_key_a,
+            "range_min": claim_key_b,
+            "range_max": claim_key_c,
+        }
+
+    return {"disease_code": claim_key_a}
+
+
+def _find_nullifier_usage(db: Session, canonical_nullifier: str) -> Optional[SelectiveNullifierUsed]:
+    return (
+        db.query(SelectiveNullifierUsed)
+        .filter(func.lower(SelectiveNullifierUsed.nullifier) == canonical_nullifier.lower())
+        .first()
+    )
+
+
+def _upsert_selective_claim_audit(
+    db: Session,
+    *,
+    claim_type: ClaimType,
+    patient_address: str,
+    verifier_scope: str,
+    expires_at: int,
+    nullifier: str,
+    status: str,
+    valid: Optional[bool],
+    reason: Optional[str],
+    onchain_root: Optional[str],
+    claim_params: Optional[Dict[str, Any]] = None,
+    public_signals: Optional[List[str]] = None,
+    proof_payload: Optional[Dict[str, Any]] = None,
+    claim_digest: Optional[str] = None,
+    record_id: Optional[int] = None,
+    mark_verified: bool = False,
+) -> SelectiveClaimAuditLog:
+    claim_log = (
+        db.query(SelectiveClaimAuditLog)
+        .filter(
+            SelectiveClaimAuditLog.patient_address == patient_address,
+            func.lower(SelectiveClaimAuditLog.nullifier) == nullifier.lower(),
+        )
+        .order_by(SelectiveClaimAuditLog.created_at.desc(), SelectiveClaimAuditLog.id.desc())
+        .first()
+    )
+
+    if not claim_log:
+        claim_log = SelectiveClaimAuditLog(
+            claim_type=claim_type.value,
+            patient_address=patient_address,
+            verifier_scope=verifier_scope,
+            expires_at=expires_at,
+            nullifier=nullifier,
+        )
+        db.add(claim_log)
+
+    claim_log.claim_type = claim_type.value
+    claim_log.status = status
+    claim_log.patient_address = patient_address
+    claim_log.verifier_scope = verifier_scope
+    claim_log.expires_at = expires_at
+    claim_log.nullifier = nullifier
+    claim_log.valid = valid
+    claim_log.reason = reason
+
+    if onchain_root is not None:
+        claim_log.onchain_root = onchain_root
+
+    if claim_params is not None:
+        claim_log.claim_params = claim_params
+
+    if public_signals is not None:
+        claim_log.public_signals = public_signals
+
+    if proof_payload is not None:
+        claim_log.proof_payload = proof_payload
+
+    if claim_digest is not None:
+        claim_log.claim_digest = claim_digest
+
+    if record_id is not None:
+        claim_log.record_id = record_id
+
+    if SELECTIVE_MANAGER_ADDRESS:
+        claim_log.manager_contract_address = SELECTIVE_MANAGER_ADDRESS
+
+    if mark_verified:
+        claim_log.verified_at = datetime.now(timezone.utc)
+
+    db.flush()
+    return claim_log
+
+
 @router.post("/prove", response_model=ProveSelectiveDisclosureResponse)
 def prove_selective_disclosure(
     payload: ProveSelectiveDisclosureRequest,
@@ -180,12 +296,45 @@ def prove_selective_disclosure(
     ).hexdigest()
 
     proof_stub = "0x" + hashlib.sha256(("proof|" + claim_digest).encode("utf-8")).hexdigest()
+    nullifier_hex = "0x" + format(nullifier_int, "x")
+
+    record_id: Optional[int] = None
+    record_id_raw = payload.witness_bundle.get("record_id")
+    if record_id_raw is not None:
+        try:
+            record_id = _coerce_int(record_id_raw, "witness_bundle.record_id")
+        except HTTPException:
+            record_id = None
+
+    _upsert_selective_claim_audit(
+        db,
+        claim_type=payload.claim_type,
+        patient_address=normalized_patient,
+        verifier_scope=payload.patient_context.verifier_scope,
+        expires_at=payload.patient_context.expires_at,
+        nullifier=nullifier_hex,
+        status="generated",
+        valid=None,
+        reason=None,
+        onchain_root=latest_root_entry.merkle_root,
+        claim_params=payload.claim_params,
+        public_signals=public_signals,
+        proof_payload={
+            "proof": proof_stub,
+            "stub": True,
+            "witness_bundle": payload.witness_bundle,
+        },
+        claim_digest="0x" + claim_digest,
+        record_id=record_id,
+        mark_verified=False,
+    )
+    db.commit()
 
     return ProveSelectiveDisclosureResponse(
         claim_type=payload.claim_type,
         proof=proof_stub,
         public_signals=public_signals,
-        nullifier="0x" + format(nullifier_int, "x"),
+        nullifier=nullifier_hex,
         expires_at=payload.patient_context.expires_at,
         claim_digest="0x" + claim_digest,
         stub=True,
@@ -198,18 +347,59 @@ def verify_selective_disclosure(
     db: Session = Depends(get_db),
 ) -> VerifySelectiveDisclosureResponse:
     normalized_patient = _normalize_address(payload.patient_address, "patient_address")
-    latest_root_entry = _latest_root_for_patient(normalized_patient, db)
-    if not latest_root_entry:
+    provided_nullifier_int, canonical_nullifier = _normalize_nullifier(payload.nullifier)
+
+    def reject_response(
+        *,
+        reason: str,
+        onchain_root: Optional[str],
+        status: str = "rejected",
+        nullifier_used: bool = False,
+    ) -> VerifySelectiveDisclosureResponse:
+        _upsert_selective_claim_audit(
+            db,
+            claim_type=payload.claim_type,
+            patient_address=normalized_patient,
+            verifier_scope=payload.verifier_scope,
+            expires_at=payload.expires_at,
+            nullifier=canonical_nullifier,
+            status=status,
+            valid=False,
+            reason=reason,
+            onchain_root=onchain_root,
+            claim_params=_claim_params_from_signals(payload.claim_type, payload.public_signals),
+            public_signals=payload.public_signals,
+            proof_payload={"proof": payload.proof, "stub": True},
+            mark_verified=True,
+        )
+        db.commit()
+
         return VerifySelectiveDisclosureResponse(
             valid=False,
+            reason=reason,
+            onchain_root=onchain_root,
+            nullifier_used=nullifier_used,
+        )
+
+    latest_root_entry = _latest_root_for_patient(normalized_patient, db)
+    if not latest_root_entry:
+        return reject_response(
             reason="No anchored root found for this patient",
             onchain_root=None,
+            status="error",
             nullifier_used=False,
         )
 
+    if _find_nullifier_usage(db, canonical_nullifier):
+        return reject_response(
+            reason="Nullifier already used (replay detected)",
+            onchain_root=latest_root_entry.merkle_root,
+            status="rejected",
+            nullifier_used=True,
+        )
+
     if len(payload.public_signals) < 9:
-        return VerifySelectiveDisclosureResponse(
-            valid=False,
+        return reject_response(
             reason="public_signals must contain at least 9 values",
             onchain_root=latest_root_entry.merkle_root,
             nullifier_used=False,
@@ -223,61 +413,91 @@ def verify_selective_disclosure(
 
     signal_expires_at = _coerce_int(payload.public_signals[7], "public_signals[7]")
     signal_nullifier = _coerce_int(payload.public_signals[8], "public_signals[8]") % SNARK_FIELD
-    provided_nullifier = _coerce_int(payload.nullifier, "nullifier") % SNARK_FIELD
+    provided_nullifier = provided_nullifier_int
 
     now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
 
     if signal_claim_type != expected_claim_type:
-        return VerifySelectiveDisclosureResponse(
-            valid=False,
+        return reject_response(
             reason="Claim type mismatch between payload and public signals",
             onchain_root=latest_root_entry.merkle_root,
             nullifier_used=False,
         )
 
     if signal_root != expected_root:
-        return VerifySelectiveDisclosureResponse(
-            valid=False,
+        return reject_response(
             reason="Merkle root mismatch between public signals and latest anchored root",
             onchain_root=latest_root_entry.merkle_root,
             nullifier_used=False,
         )
 
     if signal_expires_at != payload.expires_at:
-        return VerifySelectiveDisclosureResponse(
-            valid=False,
+        return reject_response(
             reason="Expiry mismatch between payload and public signals",
             onchain_root=latest_root_entry.merkle_root,
             nullifier_used=False,
         )
 
     if signal_nullifier != provided_nullifier:
-        return VerifySelectiveDisclosureResponse(
-            valid=False,
+        return reject_response(
             reason="Nullifier mismatch between payload and public signals",
             onchain_root=latest_root_entry.merkle_root,
             nullifier_used=False,
         )
 
     if payload.expires_at < now_epoch:
-        return VerifySelectiveDisclosureResponse(
-            valid=False,
+        return reject_response(
             reason="Claim expired",
             onchain_root=latest_root_entry.merkle_root,
+            status="expired",
             nullifier_used=False,
         )
 
     if not payload.proof.strip():
-        return VerifySelectiveDisclosureResponse(
-            valid=False,
+        return reject_response(
             reason="Proof is required",
             onchain_root=latest_root_entry.merkle_root,
             nullifier_used=False,
         )
 
+    success_reason = (
+        "Stub verification passed structural checks only "
+        "(cryptographic proof verification not yet enabled)"
+    )
+
+    claim_log = _upsert_selective_claim_audit(
+        db,
+        claim_type=payload.claim_type,
+        patient_address=normalized_patient,
+        verifier_scope=payload.verifier_scope,
+        expires_at=payload.expires_at,
+        nullifier=canonical_nullifier,
+        status="verified",
+        valid=True,
+        reason=success_reason,
+        onchain_root=latest_root_entry.merkle_root,
+        claim_params=_claim_params_from_signals(payload.claim_type, payload.public_signals),
+        public_signals=payload.public_signals,
+        proof_payload={"proof": payload.proof, "stub": True},
+        mark_verified=True,
+    )
+
+    db.add(
+        SelectiveNullifierUsed(
+            nullifier=canonical_nullifier,
+            claim_type=payload.claim_type.value,
+            patient_address=normalized_patient,
+            verifier_scope=payload.verifier_scope,
+            expires_at=payload.expires_at,
+            claim_log_id=claim_log.id,
+            reason="verified",
+        )
+    )
+    db.commit()
+
     return VerifySelectiveDisclosureResponse(
         valid=True,
-        reason="Stub verification passed structural checks only (cryptographic proof verification not yet enabled)",
+        reason=success_reason,
         onchain_root=latest_root_entry.merkle_root,
         nullifier_used=False,
     )
