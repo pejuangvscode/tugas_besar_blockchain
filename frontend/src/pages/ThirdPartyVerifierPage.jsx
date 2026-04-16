@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 
 import {
   getPublicVerificationRecords,
+  getSelectiveDisclosureAuditLogs,
   proveSelectiveDisclosure,
   verifySelectiveDisclosure,
 } from "../services/api";
@@ -55,12 +56,78 @@ const SELECTIVE_CLAIM_OPTIONS = [
   { value: "NO_DISEASE", label: "No Disease" },
 ];
 
+const SELECTIVE_AUDIT_STATUS_OPTIONS = [
+  { value: "all", label: "All" },
+  { value: "generated", label: "Generated" },
+  { value: "verified", label: "Verified" },
+  { value: "rejected", label: "Rejected" },
+  { value: "expired", label: "Expired" },
+  { value: "error", label: "Error" },
+];
+
 function parseIntegerOrThrow(rawValue, fieldLabel) {
   const parsed = Number.parseInt(String(rawValue || "").trim(), 10);
   if (!Number.isFinite(parsed)) {
     throw new Error(`${fieldLabel} must be a valid integer.`);
   }
   return parsed;
+}
+
+function formatEpochTimestamp(epochSeconds) {
+  if (epochSeconds === null || epochSeconds === undefined || epochSeconds === "") {
+    return "-";
+  }
+
+  const numeric = Number(epochSeconds);
+  if (!Number.isFinite(numeric)) {
+    return String(epochSeconds);
+  }
+
+  return new Date(numeric * 1000).toLocaleString();
+}
+
+function getSelectiveAuditStatusMeta(status, valid) {
+  const normalized = String(status || "").toLowerCase();
+
+  if (normalized === "verified" && valid) {
+    return {
+      label: "verified",
+      className: "bg-emerald-300/20 text-emerald-100",
+    };
+  }
+
+  if (normalized === "generated") {
+    return {
+      label: "generated",
+      className: "bg-cyan-300/20 text-cyan-100",
+    };
+  }
+
+  if (normalized === "expired") {
+    return {
+      label: "expired",
+      className: "bg-amber-300/20 text-amber-100",
+    };
+  }
+
+  if (normalized === "rejected" || valid === false) {
+    return {
+      label: normalized || "rejected",
+      className: "bg-red-300/20 text-red-100",
+    };
+  }
+
+  if (normalized === "error") {
+    return {
+      label: "error",
+      className: "bg-amber-300/20 text-amber-100",
+    };
+  }
+
+  return {
+    label: normalized || "unknown",
+    className: "bg-slate-300/20 text-slate-100",
+  };
 }
 
 function getStatusMeta(statusItem) {
@@ -135,6 +202,9 @@ export default function ThirdPartyVerifierPage() {
   const [selectiveInfoMessage, setSelectiveInfoMessage] = useState("");
   const [selectiveClaimPackage, setSelectiveClaimPackage] = useState(null);
   const [selectiveVerifyResult, setSelectiveVerifyResult] = useState(null);
+  const [selectiveAuditStatusFilter, setSelectiveAuditStatusFilter] = useState("all");
+  const [selectiveAuditLogs, setSelectiveAuditLogs] = useState([]);
+  const [isLoadingSelectiveAuditLogs, setIsLoadingSelectiveAuditLogs] = useState(false);
 
   useEffect(() => {
     const token = searchParams.get("token") || "";
@@ -177,6 +247,8 @@ export default function ThirdPartyVerifierPage() {
     setSelectiveVerifyResult(null);
     setSelectiveErrorMessage("");
     setSelectiveInfoMessage("");
+    setSelectiveAuditLogs([]);
+    setSelectiveAuditStatusFilter("all");
   }, [activePatientAddress]);
 
   const fetchOnChainRoot = async (patientAddress) => {
@@ -373,6 +445,44 @@ export default function ThirdPartyVerifierPage() {
     };
   };
 
+  const refreshSelectiveAuditLogs = async ({ silent = false } = {}) => {
+    if (!activePatientAddress) {
+      return;
+    }
+
+    try {
+      setIsLoadingSelectiveAuditLogs(true);
+
+      const response = await getSelectiveDisclosureAuditLogs({
+        patient_address: activePatientAddress,
+        claim_type: claimType,
+        status: selectiveAuditStatusFilter === "all" ? "" : selectiveAuditStatusFilter,
+        limit: 25,
+      });
+
+      const items = Array.isArray(response.items) ? response.items : [];
+      setSelectiveAuditLogs(items);
+
+      if (!silent) {
+        setSelectiveInfoMessage(`Loaded ${items.length} selective audit log(s).`);
+      }
+    } catch (error) {
+      if (!silent) {
+        setSelectiveErrorMessage(error?.message || "Failed to load selective audit logs.");
+      }
+    } finally {
+      setIsLoadingSelectiveAuditLogs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!activePatientAddress) {
+      return;
+    }
+
+    void refreshSelectiveAuditLogs({ silent: true });
+  }, [activePatientAddress, claimType, selectiveAuditStatusFilter]);
+
   const handleGenerateSelectiveProof = async () => {
     try {
       if (!activePatientAddress) {
@@ -409,6 +519,7 @@ export default function ThirdPartyVerifierPage() {
       setSelectiveVerifyResult(null);
       setNonceInput(String(Date.now()));
       setSelectiveInfoMessage("Selective disclosure proof package generated.");
+      await refreshSelectiveAuditLogs({ silent: true });
     } catch (error) {
       setSelectiveErrorMessage(error?.message || "Failed to generate selective disclosure proof.");
     } finally {
@@ -447,6 +558,7 @@ export default function ThirdPartyVerifierPage() {
 
       setSelectiveVerifyResult(response);
       setSelectiveInfoMessage("Selective disclosure verification finished.");
+      await refreshSelectiveAuditLogs({ silent: true });
     } catch (error) {
       setSelectiveErrorMessage(error?.message || "Failed to verify selective disclosure proof.");
     } finally {
@@ -785,6 +897,15 @@ export default function ThirdPartyVerifierPage() {
           >
             {isVerifyingSelectiveProof ? "Verifying..." : "Verify Selective Claim"}
           </button>
+
+          <button
+            type="button"
+            onClick={() => void refreshSelectiveAuditLogs()}
+            disabled={isLoadingSelectiveAuditLogs || !activePatientAddress}
+            className={PRIMARY_ACTION_CLASS}
+          >
+            {isLoadingSelectiveAuditLogs ? "Refreshing..." : "Refresh Audit Logs"}
+          </button>
         </div>
 
         {selectiveErrorMessage && (
@@ -820,11 +941,98 @@ export default function ThirdPartyVerifierPage() {
             >
               {selectiveVerifyResult.valid ? "valid" : "invalid"}
             </p>
+            {selectiveVerifyResult.nullifier_used && (
+              <p className="mt-2 text-xs text-amber-200">
+                Nullifier has already been used. This indicates replay attempt was blocked.
+              </p>
+            )}
             <pre className="mt-2 max-h-64 overflow-auto rounded-xl bg-slate-900/60 p-3 text-xs text-slate-200">
               {JSON.stringify(selectiveVerifyResult, null, 2)}
             </pre>
           </div>
         )}
+
+        <div className="mt-4 rounded-2xl border border-white/15 bg-white/5 p-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-white">Selective Audit Trail</p>
+              <p className="mt-1 text-xs text-slate-300">
+                Menampilkan riwayat claim sesuai patient, claim type, dan status filter.
+              </p>
+            </div>
+
+            <label className="text-xs text-slate-200">
+              Status Filter
+              <select
+                value={selectiveAuditStatusFilter}
+                onChange={(event) => setSelectiveAuditStatusFilter(event.target.value)}
+                className="mt-1 w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs text-white outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-300/25"
+              >
+                {SELECTIVE_AUDIT_STATUS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value} className="text-slate-900">
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full divide-y divide-white/10 text-left text-xs">
+              <thead className="bg-slate-900/35 text-slate-200">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Time</th>
+                  <th className="px-3 py-2 font-semibold">Status</th>
+                  <th className="px-3 py-2 font-semibold">Nullifier</th>
+                  <th className="px-3 py-2 font-semibold">Expires</th>
+                  <th className="px-3 py-2 font-semibold">Reason</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5 text-slate-100">
+                {selectiveAuditLogs.map((logItem) => {
+                  const statusMeta = getSelectiveAuditStatusMeta(logItem.status, logItem.valid);
+
+                  return (
+                    <tr key={logItem.id}>
+                      <td className="whitespace-nowrap px-3 py-2 text-slate-300">
+                        {formatTimestamp(logItem.created_at)}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] ${statusMeta.className}`}
+                        >
+                          {statusMeta.label}
+                        </span>
+                        {logItem.nullifier_used && (
+                          <span className="ml-2 inline-flex rounded-full bg-amber-300/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-amber-100">
+                            nullifier used
+                          </span>
+                        )}
+                      </td>
+                      <td className="max-w-[280px] px-3 py-2 text-slate-200">
+                        <code className="break-all">{logItem.nullifier || "-"}</code>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2 text-slate-300">
+                        {formatEpochTimestamp(logItem.expires_at)}
+                      </td>
+                      <td className="max-w-md px-3 py-2 text-slate-300">{logItem.reason || "-"}</td>
+                    </tr>
+                  );
+                })}
+
+                {selectiveAuditLogs.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-3 py-6 text-center text-slate-300">
+                      {activePatientAddress
+                        ? "No selective audit logs found for current filters."
+                        : "Load records first to view selective audit logs."}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </article>
     </section>
   );

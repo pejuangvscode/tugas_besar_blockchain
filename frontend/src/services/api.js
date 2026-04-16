@@ -90,3 +90,29 @@ export function verifySelectiveDisclosure(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function getSelectiveDisclosureAuditLogs(params = {}) {
+  const query = new URLSearchParams();
+
+  if (params.patient_address && String(params.patient_address).trim()) {
+    query.set("patient_address", String(params.patient_address).trim());
+  }
+
+  if (params.claim_type && String(params.claim_type).trim()) {
+    query.set("claim_type", String(params.claim_type).trim());
+  }
+
+  if (params.status && String(params.status).trim()) {
+    query.set("status", String(params.status).trim());
+  }
+
+  if (Number.isFinite(params.limit)) {
+    query.set("limit", String(params.limit));
+  }
+
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+
+  return request(`/selective-disclosure/audit${suffix}`, {
+    method: "GET",
+  });
+}

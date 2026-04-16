@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from eth_utils import is_address, to_checksum_address
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -72,6 +72,37 @@ class VerifySelectiveDisclosureResponse(BaseModel):
     reason: str
     onchain_root: Optional[str]
     nullifier_used: bool
+
+
+class SelectiveAuditLogItem(BaseModel):
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    claim_type: str
+    status: str
+
+    patient_address: str
+    verifier_scope: str
+    expires_at: int
+    nullifier: str
+
+    claim_digest: Optional[str]
+    onchain_root: Optional[str]
+    record_id: Optional[int]
+
+    claim_params: Dict[str, Any]
+    public_signals: List[str]
+
+    valid: Optional[bool]
+    reason: Optional[str]
+    verified_at: Optional[datetime]
+    nullifier_used: bool
+
+
+class SelectiveAuditLogListResponse(BaseModel):
+    items: List[SelectiveAuditLogItem]
+    count: int
 
 
 def _normalize_address(value: str, field_name: str) -> str:
@@ -240,6 +271,74 @@ def _upsert_selective_claim_audit(
 
     db.flush()
     return claim_log
+
+
+@router.get("/audit", response_model=SelectiveAuditLogListResponse)
+def get_selective_disclosure_audit_logs(
+    patient_address: Optional[str] = None,
+    claim_type: Optional[ClaimType] = None,
+    status: Optional[str] = None,
+    limit: int = Query(default=20, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> SelectiveAuditLogListResponse:
+    query = db.query(SelectiveClaimAuditLog)
+
+    if patient_address:
+        normalized_patient = _normalize_address(patient_address, "patient_address")
+        query = query.filter(SelectiveClaimAuditLog.patient_address == normalized_patient)
+
+    if claim_type:
+        query = query.filter(SelectiveClaimAuditLog.claim_type == claim_type.value)
+
+    if status and status.strip():
+        query = query.filter(func.lower(SelectiveClaimAuditLog.status) == status.strip().lower())
+
+    rows = (
+        query.order_by(SelectiveClaimAuditLog.created_at.desc(), SelectiveClaimAuditLog.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    nullifier_keys = [row.nullifier.strip().lower() for row in rows if isinstance(row.nullifier, str)]
+    used_nullifiers: set[str] = set()
+    if nullifier_keys:
+        used_rows = (
+            db.query(func.lower(SelectiveNullifierUsed.nullifier))
+            .filter(func.lower(SelectiveNullifierUsed.nullifier).in_(nullifier_keys))
+            .all()
+        )
+        used_nullifiers = {value for (value,) in used_rows if value}
+
+    items: List[SelectiveAuditLogItem] = []
+    for row in rows:
+        parsed_public_signals = [str(item) for item in (row.public_signals or [])]
+        parsed_claim_params = row.claim_params or {}
+        normalized_nullifier = (row.nullifier or "").strip().lower()
+
+        items.append(
+            SelectiveAuditLogItem(
+                id=row.id,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                claim_type=row.claim_type,
+                status=row.status,
+                patient_address=row.patient_address,
+                verifier_scope=row.verifier_scope,
+                expires_at=row.expires_at,
+                nullifier=row.nullifier,
+                claim_digest=row.claim_digest,
+                onchain_root=row.onchain_root,
+                record_id=row.record_id,
+                claim_params=parsed_claim_params,
+                public_signals=parsed_public_signals,
+                valid=row.valid,
+                reason=row.reason,
+                verified_at=row.verified_at,
+                nullifier_used=normalized_nullifier in used_nullifiers,
+            )
+        )
+
+    return SelectiveAuditLogListResponse(items=items, count=len(items))
 
 
 @router.post("/prove", response_model=ProveSelectiveDisclosureResponse)
