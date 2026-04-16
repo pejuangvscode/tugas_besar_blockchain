@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 
 import { useMetaMask } from "../hooks/useMetaMask";
-import { createRecord, getPatientWallets, updateMerkleRootTxHash } from "../services/api";
+import {
+  createRecord,
+  getPatientWallets,
+  getSelectiveDisclosureAuditLogs,
+  updateMerkleRootTxHash,
+} from "../services/api";
 import { getBrowserProvider, getRegistryContract } from "../services/contract";
 import { buildCreateRecordTypedData, signTypedData } from "../services/eip712";
 
@@ -12,6 +17,79 @@ function truncateAddress(address) {
 }
 
 const PATIENT_BOOK_STORAGE_KEY = "smr.patientBook.v1";
+
+const SELECTIVE_CLAIM_FILTERS = [
+  { value: "all", label: "All Claim Types" },
+  { value: "HAS_CATEGORY", label: "Has Category" },
+  { value: "LAB_IN_RANGE", label: "Lab In Range" },
+  { value: "NO_DISEASE", label: "No Disease" },
+];
+
+const SELECTIVE_STATUS_FILTERS = [
+  { value: "all", label: "All Statuses" },
+  { value: "generated", label: "Generated" },
+  { value: "verified", label: "Verified" },
+  { value: "rejected", label: "Rejected" },
+  { value: "expired", label: "Expired" },
+  { value: "error", label: "Error" },
+];
+
+function formatEpochTimestamp(epochSeconds) {
+  if (epochSeconds === null || epochSeconds === undefined || epochSeconds === "") {
+    return "-";
+  }
+
+  const numeric = Number(epochSeconds);
+  if (!Number.isFinite(numeric)) {
+    return String(epochSeconds);
+  }
+
+  return new Date(numeric * 1000).toLocaleString();
+}
+
+function getSelectiveAuditStatusBadge(status, valid) {
+  const normalized = String(status || "").toLowerCase();
+
+  if (normalized === "verified" && valid) {
+    return {
+      label: "verified",
+      className: "bg-emerald-300/20 text-emerald-100",
+    };
+  }
+
+  if (normalized === "generated") {
+    return {
+      label: "generated",
+      className: "bg-cyan-300/20 text-cyan-100",
+    };
+  }
+
+  if (normalized === "expired") {
+    return {
+      label: "expired",
+      className: "bg-amber-300/20 text-amber-100",
+    };
+  }
+
+  if (normalized === "rejected" || valid === false) {
+    return {
+      label: normalized || "rejected",
+      className: "bg-red-300/20 text-red-100",
+    };
+  }
+
+  if (normalized === "error") {
+    return {
+      label: "error",
+      className: "bg-amber-300/20 text-amber-100",
+    };
+  }
+
+  return {
+    label: normalized || "unknown",
+    className: "bg-slate-300/20 text-slate-100",
+  };
+}
 
 function loadPatientBook() {
   if (typeof window === "undefined") {
@@ -72,6 +150,11 @@ export default function DoctorDashboard() {
   const [detectedPatients, setDetectedPatients] = useState([]);
   const [isLoadingDetectedPatients, setIsLoadingDetectedPatients] = useState(false);
   const [detectedPatientsError, setDetectedPatientsError] = useState("");
+  const [selectiveClaimFilter, setSelectiveClaimFilter] = useState("all");
+  const [selectiveStatusFilter, setSelectiveStatusFilter] = useState("all");
+  const [selectiveAuditLogs, setSelectiveAuditLogs] = useState([]);
+  const [isLoadingSelectiveAudit, setIsLoadingSelectiveAudit] = useState(false);
+  const [selectiveAuditError, setSelectiveAuditError] = useState("");
 
   const {
     account,
@@ -107,6 +190,18 @@ export default function DoctorDashboard() {
 
     return selected ? selected.address : "";
   }, [patientAddress, detectedPatientOptions]);
+
+  const normalizedAuditPatientAddress = useMemo(() => {
+    if (!patientAddress.trim()) {
+      return "";
+    }
+
+    try {
+      return ethers.getAddress(patientAddress.trim());
+    } catch {
+      return "";
+    }
+  }, [patientAddress]);
 
   const loadDetectedPatients = useCallback(async () => {
     try {
@@ -149,10 +244,53 @@ export default function DoctorDashboard() {
     setPatientLabel(firstPatient.label);
   }, [patientType, detectedPatientOptions, selectedDetectedPatientAddress]);
 
+  useEffect(() => {
+    if (!normalizedAuditPatientAddress) {
+      setSelectiveAuditLogs([]);
+      setSelectiveAuditError("");
+      return;
+    }
+
+    const run = async () => {
+      await refreshSelectiveAuditLogs(true);
+    };
+
+    void run();
+  }, [normalizedAuditPatientAddress, selectiveClaimFilter, selectiveStatusFilter]);
+
   const explorerLink = useMemo(() => {
     if (!result?.tx_hash) return "";
     return `https://sepolia.etherscan.io/tx/${result.tx_hash}`;
   }, [result]);
+
+  const refreshSelectiveAuditLogs = async (silent = false) => {
+    if (!normalizedAuditPatientAddress) {
+      if (!silent) {
+        setSelectiveAuditError("Select a valid patient wallet first.");
+      }
+      return;
+    }
+
+    try {
+      setIsLoadingSelectiveAudit(true);
+      setSelectiveAuditError("");
+
+      const response = await getSelectiveDisclosureAuditLogs({
+        patient_address: normalizedAuditPatientAddress,
+        claim_type: selectiveClaimFilter === "all" ? "" : selectiveClaimFilter,
+        status: selectiveStatusFilter === "all" ? "" : selectiveStatusFilter,
+        limit: 20,
+      });
+
+      setSelectiveAuditLogs(Array.isArray(response.items) ? response.items : []);
+    } catch (error) {
+      if (!silent) {
+        setSelectiveAuditError(error?.message || "Failed to load selective audit logs.");
+      }
+    } finally {
+      setIsLoadingSelectiveAudit(false);
+    }
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -232,6 +370,7 @@ export default function DoctorDashboard() {
       setBookMessage(`Saved ${fallbackLabel} to quick patient list.`);
 
       void loadDetectedPatients();
+      await refreshSelectiveAuditLogs(true);
 
       setRawText("");
     } catch (error) {
@@ -535,38 +674,148 @@ export default function DoctorDashboard() {
         </form>
       </article>
 
-      <aside className="panel rounded-3xl p-6 shadow-glow sm:p-8 animate-fadeInUp">
-        <h2 className="font-heading text-2xl font-bold text-white">Latest Submission</h2>
-        <p className="mt-2 text-sm text-slate-200">
-          After anchoring, transaction hash is saved to backend for future audit linkage.
-        </p>
+      <div className="space-y-6 animate-fadeInUp">
+        <aside className="panel rounded-3xl p-6 shadow-glow sm:p-8">
+          <h2 className="font-heading text-2xl font-bold text-white">Latest Submission</h2>
+          <p className="mt-2 text-sm text-slate-200">
+            After anchoring, transaction hash is saved to backend for future audit linkage.
+          </p>
 
-        {result ? (
-          <div className="mt-5 space-y-3 rounded-2xl border border-emerald-200/30 bg-emerald-400/10 p-4 text-sm text-emerald-100">
-            <p>
-              <strong>Leaf Hash:</strong> {result.leaf_hash}
-            </p>
-            <p>
-              <strong>Merkle Root:</strong> {result.merkle_root}
-            </p>
-            <p>
-              <strong>Tx Hash:</strong> {result.tx_hash}
-            </p>
-            <a
-              href={explorerLink}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex rounded-full border border-emerald-100/40 px-3 py-1 text-xs font-bold uppercase tracking-[0.08em] text-emerald-50 hover:bg-emerald-100/15"
+          {result ? (
+            <div className="mt-5 space-y-3 rounded-2xl border border-emerald-200/30 bg-emerald-400/10 p-4 text-sm text-emerald-100">
+              <p>
+                <strong>Leaf Hash:</strong> {result.leaf_hash}
+              </p>
+              <p>
+                <strong>Merkle Root:</strong> {result.merkle_root}
+              </p>
+              <p>
+                <strong>Tx Hash:</strong> {result.tx_hash}
+              </p>
+              <a
+                href={explorerLink}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex rounded-full border border-emerald-100/40 px-3 py-1 text-xs font-bold uppercase tracking-[0.08em] text-emerald-50 hover:bg-emerald-100/15"
+              >
+                View on Sepolia Etherscan
+              </a>
+            </div>
+          ) : (
+            <div className="mt-5 rounded-2xl border border-white/20 bg-white/5 p-4 text-sm text-slate-200">
+              No anchored record yet in this session.
+            </div>
+          )}
+        </aside>
+
+        <aside className="panel rounded-3xl p-6 shadow-glow sm:p-8">
+          <h2 className="font-heading text-2xl font-bold text-white">Selective Audit (Patient)</h2>
+          <p className="mt-2 text-sm text-slate-200">
+            Monitor selective disclosure activity for selected patient wallet.
+          </p>
+
+          <div className="mt-4 flex flex-wrap items-end gap-2">
+            <label className="text-xs text-slate-300">
+              Claim Type
+              <select
+                value={selectiveClaimFilter}
+                onChange={(event) => setSelectiveClaimFilter(event.target.value)}
+                className="mt-1 rounded-xl border border-white/20 bg-slate-950/40 px-3 py-2 text-xs text-white outline-none focus:border-cyan-200/70"
+              >
+                {SELECTIVE_CLAIM_FILTERS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-xs text-slate-300">
+              Status
+              <select
+                value={selectiveStatusFilter}
+                onChange={(event) => setSelectiveStatusFilter(event.target.value)}
+                className="mt-1 rounded-xl border border-white/20 bg-slate-950/40 px-3 py-2 text-xs text-white outline-none focus:border-cyan-200/70"
+              >
+                {SELECTIVE_STATUS_FILTERS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              onClick={() => void refreshSelectiveAuditLogs()}
+              disabled={!normalizedAuditPatientAddress || isLoadingSelectiveAudit}
+              className="rounded-full border border-cyan-200/60 bg-cyan-300/10 px-3 py-2 text-xs font-bold uppercase tracking-[0.08em] text-cyan-100 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              View on Sepolia Etherscan
-            </a>
+              {isLoadingSelectiveAudit ? "Refreshing..." : "Refresh"}
+            </button>
           </div>
-        ) : (
-          <div className="mt-5 rounded-2xl border border-white/20 bg-white/5 p-4 text-sm text-slate-200">
-            No anchored record yet in this session.
+
+          <p className="mt-3 text-xs text-slate-300 break-all">
+            Patient: {normalizedAuditPatientAddress || "No valid wallet selected"}
+          </p>
+
+          {selectiveAuditError && (
+            <div className="mt-3 rounded-xl border border-red-200/40 bg-red-500/10 p-3 text-sm text-red-100">
+              {selectiveAuditError}
+            </div>
+          )}
+
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full divide-y divide-white/10 text-left text-xs">
+              <thead className="bg-slate-900/35 text-slate-200">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Created</th>
+                  <th className="px-3 py-2 font-semibold">Claim</th>
+                  <th className="px-3 py-2 font-semibold">Status</th>
+                  <th className="px-3 py-2 font-semibold">Expires</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5 text-slate-100">
+                {selectiveAuditLogs.map((logItem) => {
+                  const badge = getSelectiveAuditStatusBadge(logItem.status, logItem.valid);
+
+                  return (
+                    <tr key={logItem.id}>
+                      <td className="whitespace-nowrap px-3 py-2 text-slate-300">{logItem.created_at}</td>
+                      <td className="px-3 py-2 text-slate-100">{logItem.claim_type}</td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] ${badge.className}`}
+                        >
+                          {badge.label}
+                        </span>
+                        {logItem.nullifier_used && (
+                          <span className="ml-2 inline-flex rounded-full bg-amber-300/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-amber-100">
+                            replay blocked
+                          </span>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2 text-slate-300">
+                        {formatEpochTimestamp(logItem.expires_at)}
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {selectiveAuditLogs.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-6 text-center text-slate-300">
+                      {normalizedAuditPatientAddress
+                        ? "No selective logs found for current filters."
+                        : "Select a valid patient wallet to load logs."}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
-        )}
-      </aside>
+        </aside>
+      </div>
     </section>
   );
 }

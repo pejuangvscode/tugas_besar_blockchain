@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 
 import { useMetaMask } from "../hooks/useMetaMask";
-import { getPatientRecords } from "../services/api";
+import { getPatientRecords, getSelectiveDisclosureAuditLogs } from "../services/api";
 import { getBrowserProvider, getRegistryContract } from "../services/contract";
 import { decryptRawText } from "../services/crypto";
 import { buildPatientAccessTypedData, signTypedData } from "../services/eip712";
@@ -36,6 +36,79 @@ const BLUE_ACTION_MENU_ITEM_CLASS =
 const ACTION_META_CLASS =
   "text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400";
 
+const SELECTIVE_CLAIM_FILTERS = [
+  { value: "all", label: "All Claim Types" },
+  { value: "HAS_CATEGORY", label: "Has Category" },
+  { value: "LAB_IN_RANGE", label: "Lab In Range" },
+  { value: "NO_DISEASE", label: "No Disease" },
+];
+
+const SELECTIVE_STATUS_FILTERS = [
+  { value: "all", label: "All Statuses" },
+  { value: "generated", label: "Generated" },
+  { value: "verified", label: "Verified" },
+  { value: "rejected", label: "Rejected" },
+  { value: "expired", label: "Expired" },
+  { value: "error", label: "Error" },
+];
+
+function formatEpochTimestamp(epochSeconds) {
+  if (epochSeconds === null || epochSeconds === undefined || epochSeconds === "") {
+    return "-";
+  }
+
+  const numeric = Number(epochSeconds);
+  if (!Number.isFinite(numeric)) {
+    return String(epochSeconds);
+  }
+
+  return new Date(numeric * 1000).toLocaleString();
+}
+
+function getSelectiveAuditStatusBadge(status, valid) {
+  const normalized = String(status || "").toLowerCase();
+
+  if (normalized === "verified" && valid) {
+    return {
+      label: "verified",
+      className: "bg-emerald-300/20 text-emerald-100",
+    };
+  }
+
+  if (normalized === "generated") {
+    return {
+      label: "generated",
+      className: "bg-cyan-300/20 text-cyan-100",
+    };
+  }
+
+  if (normalized === "expired") {
+    return {
+      label: "expired",
+      className: "bg-amber-300/20 text-amber-100",
+    };
+  }
+
+  if (normalized === "rejected" || valid === false) {
+    return {
+      label: normalized || "rejected",
+      className: "bg-red-300/20 text-red-100",
+    };
+  }
+
+  if (normalized === "error") {
+    return {
+      label: "error",
+      className: "bg-amber-300/20 text-amber-100",
+    };
+  }
+
+  return {
+    label: normalized || "unknown",
+    className: "bg-slate-300/20 text-slate-100",
+  };
+}
+
 export default function PatientDashboard() {
   const [records, setRecords] = useState([]);
   const [selectedRecordIds, setSelectedRecordIds] = useState([]);
@@ -48,6 +121,11 @@ export default function PatientDashboard() {
   const [isPreparingQr, setIsPreparingQr] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
+  const [selectiveClaimFilter, setSelectiveClaimFilter] = useState("all");
+  const [selectiveStatusFilter, setSelectiveStatusFilter] = useState("all");
+  const [selectiveAuditLogs, setSelectiveAuditLogs] = useState([]);
+  const [isLoadingSelectiveAudit, setIsLoadingSelectiveAudit] = useState(false);
+  const [selectiveAuditError, setSelectiveAuditError] = useState("");
   const [confirmDialog, setConfirmDialog] = useState({
     isOpen: false,
     title: "",
@@ -132,6 +210,20 @@ export default function PatientDashboard() {
     };
   }, [isActionMenuOpen]);
 
+  useEffect(() => {
+    if (!account) {
+      setSelectiveAuditLogs([]);
+      setSelectiveAuditError("");
+      return;
+    }
+
+    const run = async () => {
+      await refreshSelectiveAuditLogs(true);
+    };
+
+    void run();
+  }, [account, selectiveClaimFilter, selectiveStatusFilter]);
+
   const requestConfirmation = ({
     title,
     message,
@@ -160,6 +252,35 @@ export default function PatientDashboard() {
     if (confirmResolverRef.current) {
       confirmResolverRef.current(approved);
       confirmResolverRef.current = null;
+    }
+  };
+
+  const refreshSelectiveAuditLogs = async (silent = false) => {
+    if (!account) {
+      if (!silent) {
+        setSelectiveAuditError("Connect patient wallet first.");
+      }
+      return;
+    }
+
+    try {
+      setIsLoadingSelectiveAudit(true);
+      setSelectiveAuditError("");
+
+      const response = await getSelectiveDisclosureAuditLogs({
+        patient_address: account,
+        claim_type: selectiveClaimFilter === "all" ? "" : selectiveClaimFilter,
+        status: selectiveStatusFilter === "all" ? "" : selectiveStatusFilter,
+        limit: 20,
+      });
+
+      setSelectiveAuditLogs(Array.isArray(response.items) ? response.items : []);
+    } catch (error) {
+      if (!silent) {
+        setSelectiveAuditError(error?.message || "Failed to load selective audit logs.");
+      }
+    } finally {
+      setIsLoadingSelectiveAudit(false);
     }
   };
 
@@ -205,6 +326,7 @@ export default function PatientDashboard() {
       setShareQr(null);
       setCopyStatus("");
       setIsActionMenuOpen(false);
+      await refreshSelectiveAuditLogs(true);
 
       const failedDecryptCount = decryptedRecords.filter((record) => record.decrypt_error).length;
       if (failedDecryptCount > 0) {
@@ -749,6 +871,116 @@ export default function PatientDashboard() {
                 <tr>
                   <td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-300">
                     No records loaded yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article className="panel rounded-3xl p-5 shadow-glow">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.14em] text-slate-300">Selective Disclosure Activity</p>
+            <p className="mt-2 text-sm text-slate-200">
+              Lihat riwayat claim selective disclosure untuk wallet pasien ini.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="text-xs text-slate-300">
+              Claim Type
+              <select
+                value={selectiveClaimFilter}
+                onChange={(event) => setSelectiveClaimFilter(event.target.value)}
+                className="mt-1 rounded-xl border border-white/20 bg-slate-950/40 px-3 py-2 text-xs text-white outline-none focus:border-blue-300"
+              >
+                {SELECTIVE_CLAIM_FILTERS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-xs text-slate-300">
+              Status
+              <select
+                value={selectiveStatusFilter}
+                onChange={(event) => setSelectiveStatusFilter(event.target.value)}
+                className="mt-1 rounded-xl border border-white/20 bg-slate-950/40 px-3 py-2 text-xs text-white outline-none focus:border-blue-300"
+              >
+                {SELECTIVE_STATUS_FILTERS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              onClick={() => void refreshSelectiveAuditLogs()}
+              disabled={!account || isLoadingSelectiveAudit}
+              className={BLUE_TINY_BUTTON_CLASS}
+            >
+              {isLoadingSelectiveAudit ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        {selectiveAuditError && (
+          <div className="mt-4 rounded-xl border border-red-200/40 bg-red-500/10 p-3 text-sm text-red-100">
+            {selectiveAuditError}
+          </div>
+        )}
+
+        <div className="mt-4 overflow-x-auto">
+          <table className="min-w-full divide-y divide-white/10 text-left text-xs">
+            <thead className="bg-slate-900/35 text-slate-200">
+              <tr>
+                <th className="px-3 py-2 font-semibold">Created</th>
+                <th className="px-3 py-2 font-semibold">Claim</th>
+                <th className="px-3 py-2 font-semibold">Status</th>
+                <th className="px-3 py-2 font-semibold">Expires</th>
+                <th className="px-3 py-2 font-semibold">Reason</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5 text-slate-100">
+              {selectiveAuditLogs.map((logItem) => {
+                const badge = getSelectiveAuditStatusBadge(logItem.status, logItem.valid);
+
+                return (
+                  <tr key={logItem.id}>
+                    <td className="whitespace-nowrap px-3 py-2 text-slate-300">{logItem.created_at}</td>
+                    <td className="px-3 py-2 text-slate-100">{logItem.claim_type}</td>
+                    <td className="px-3 py-2">
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] ${badge.className}`}
+                      >
+                        {badge.label}
+                      </span>
+                      {logItem.nullifier_used && (
+                        <span className="ml-2 inline-flex rounded-full bg-amber-300/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-amber-100">
+                          replay blocked
+                        </span>
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-slate-300">
+                      {formatEpochTimestamp(logItem.expires_at)}
+                    </td>
+                    <td className="max-w-lg px-3 py-2 text-slate-300">{logItem.reason || "-"}</td>
+                  </tr>
+                );
+              })}
+
+              {selectiveAuditLogs.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-3 py-6 text-center text-slate-300">
+                    {account
+                      ? "No selective disclosure logs found for current filters."
+                      : "Connect wallet to load selective disclosure logs."}
                   </td>
                 </tr>
               )}
