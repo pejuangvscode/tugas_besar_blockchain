@@ -12,7 +12,7 @@ import { buildWalletRoleTypedData, signTypedData } from "./services/eip712";
 const ROLE_LABELS = {
   doctor: "Doctor",
   patient: "Patient",
-  verifier: "Third-Party Verifier",
+  verifier: "Insurance Verifier",
 };
 
 const ROLE_PATHS = {
@@ -252,7 +252,7 @@ export default function App() {
                     {[
                       { value: "doctor", label: "Doctor" },
                       { value: "patient", label: "Patient" },
-                      { value: "verifier", label: "Third-Party Verifier" },
+                      { value: "verifier", label: "Insurance Verifier" },
                     ].map((item) => (
                       <button
                         key={item.value}

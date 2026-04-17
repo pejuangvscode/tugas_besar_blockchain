@@ -14,9 +14,9 @@ const pillars = [
     description: "Generate zero-knowledge certificates without exposing the underlying note text.",
   },
   {
-    title: "Third-Party Validation",
+    title: "Insurance Verification",
     description:
-      "Insurers and auditors can validate integrity packages against on-chain roots.",
+      "Patient-issued certificates can be verified by insurance teams against on-chain roots.",
   },
 ];
 
@@ -54,7 +54,7 @@ export default function HomePage() {
             to="/verifier"
             className="rounded-full border border-slate-300 bg-slate-900 px-5 py-3 text-sm font-bold text-slate-50 transition hover:bg-slate-700"
           >
-            Open Third-Party Verifier
+            Open Insurance Verifier
           </Link>
         </div>
       </div>

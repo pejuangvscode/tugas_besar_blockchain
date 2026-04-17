@@ -55,12 +55,15 @@ class ProveSelectiveDisclosureRequest(BaseModel):
 
 class ProveSelectiveDisclosureResponse(BaseModel):
     claim_type: ClaimType
+    patient_address: str
+    verifier_scope: str
     proof: str
     public_signals: List[str]
     nullifier: str
     expires_at: int
     claim_digest: str
     stub: bool
+    workflow: Dict[str, Any]
 
 
 class VerifySelectiveDisclosureRequest(BaseModel):
@@ -71,6 +74,7 @@ class VerifySelectiveDisclosureRequest(BaseModel):
     nullifier: str
     proof: str
     public_signals: List[str]
+    workflow: Dict[str, Any] = Field(default_factory=dict)
 
 
 class VerifySelectiveDisclosureResponse(BaseModel):
@@ -183,7 +187,7 @@ def _resolve_claim_params(
     witness_bundle: Dict[str, Any],
     patient_address: str,
     db: Session,
-) -> tuple[Dict[str, int], int]:
+) -> tuple[Dict[str, int], int, str]:
     record_id_raw = witness_bundle.get("record_id")
     if record_id_raw is None:
         raise HTTPException(status_code=400, detail="witness_bundle.record_id is required")
@@ -215,7 +219,7 @@ def _resolve_claim_params(
         if "category_code" in claim_params and _coerce_int(claim_params["category_code"], "category_code") != record_category:
             raise HTTPException(status_code=400, detail="category_code does not match selected record")
 
-        return {"category_code": record_category}, record_id
+        return {"category_code": record_category}, record_id, record.doctor_address
 
     if claim_type == ClaimType.LAB_IN_RANGE:
         if "lab_code" not in record_claim_data or "lab_value" not in record_claim_data:
@@ -243,7 +247,7 @@ def _resolve_claim_params(
             "range_min": range_min,
             "range_max": range_max,
             "lab_value": record_lab_value,
-        }, record_id
+        }, record_id, record.doctor_address
 
     if "diagnosis_code" not in record_claim_data:
         raise HTTPException(status_code=400, detail="Selected record does not include diagnosis_code")
@@ -259,7 +263,18 @@ def _resolve_claim_params(
     return {
         "disease_code": disease_code,
         "diagnosis_code": diagnosis_code,
-    }, record_id
+    }, record_id, record.doctor_address
+
+
+def _build_workflow_metadata(*, patient_address: str, prover_wallet: str) -> Dict[str, str]:
+    return {
+        "certificate_issuer_role": "patient",
+        "prover_role": "hospital",
+        "verifier_role": "insurance",
+        "certificate_issuer_wallet": patient_address,
+        "prover_wallet": prover_wallet,
+        "intended_use": "insurance-claim-review",
+    }
 
 
 def _claim_keys(claim_type: ClaimType, claim_params: Dict[str, Any]) -> tuple[int, int, int]:
@@ -468,12 +483,17 @@ def prove_selective_disclosure(
     if not latest_root_entry:
         raise HTTPException(status_code=404, detail="No anchored Merkle root found for this patient")
 
-    resolved_claim_params, record_id = _resolve_claim_params(
+    resolved_claim_params, record_id, prover_wallet = _resolve_claim_params(
         claim_type=payload.claim_type,
         claim_params=payload.claim_params,
         witness_bundle=payload.witness_bundle,
         patient_address=normalized_patient,
         db=db,
+    )
+
+    workflow_metadata = _build_workflow_metadata(
+        patient_address=normalized_patient,
+        prover_wallet=prover_wallet,
     )
 
     claim_type_id = CLAIM_TYPE_TO_ID[payload.claim_type]
@@ -538,6 +558,7 @@ def prove_selective_disclosure(
             "proof": proof_stub,
             "stub": True,
             "witness_bundle": payload.witness_bundle,
+            "workflow": workflow_metadata,
         },
         claim_digest="0x" + claim_digest,
         record_id=record_id,
@@ -547,12 +568,15 @@ def prove_selective_disclosure(
 
     return ProveSelectiveDisclosureResponse(
         claim_type=payload.claim_type,
+        patient_address=normalized_patient,
+        verifier_scope=payload.patient_context.verifier_scope,
         proof=proof_stub,
         public_signals=public_signals,
         nullifier=nullifier_hex,
         expires_at=payload.patient_context.expires_at,
         claim_digest="0x" + claim_digest,
         stub=True,
+        workflow=workflow_metadata,
     )
 
 
@@ -563,6 +587,7 @@ def verify_selective_disclosure(
 ) -> VerifySelectiveDisclosureResponse:
     normalized_patient = _normalize_address(payload.patient_address, "patient_address")
     provided_nullifier_int, canonical_nullifier = _normalize_nullifier(payload.nullifier)
+    workflow_metadata = payload.workflow or {}
 
     def reject_response(
         *,
@@ -584,7 +609,7 @@ def verify_selective_disclosure(
             onchain_root=onchain_root,
             claim_params=_claim_params_from_signals(payload.claim_type, payload.public_signals),
             public_signals=payload.public_signals,
-            proof_payload={"proof": payload.proof, "stub": True},
+            proof_payload={"proof": payload.proof, "stub": True, "workflow": workflow_metadata},
             mark_verified=True,
         )
         db.commit()
@@ -602,6 +627,80 @@ def verify_selective_disclosure(
             reason="No anchored root found for this patient",
             onchain_root=None,
             status="error",
+            nullifier_used=False,
+        )
+
+    required_workflow_fields = [
+        "certificate_issuer_role",
+        "prover_role",
+        "verifier_role",
+        "certificate_issuer_wallet",
+        "prover_wallet",
+    ]
+    missing_workflow_fields = [
+        field_name
+        for field_name in required_workflow_fields
+        if not str(workflow_metadata.get(field_name, "")).strip()
+    ]
+    if missing_workflow_fields:
+        return reject_response(
+            reason="Missing workflow metadata fields: " + ", ".join(missing_workflow_fields),
+            onchain_root=latest_root_entry.merkle_root,
+            status="error",
+            nullifier_used=False,
+        )
+
+    workflow_issuer_role = str(workflow_metadata.get("certificate_issuer_role", "")).strip().lower()
+    workflow_prover_role = str(workflow_metadata.get("prover_role", "")).strip().lower()
+    workflow_verifier_role = str(workflow_metadata.get("verifier_role", "")).strip().lower()
+    if (
+        workflow_issuer_role != "patient"
+        or workflow_prover_role != "hospital"
+        or workflow_verifier_role != "insurance"
+    ):
+        return reject_response(
+            reason="Invalid workflow roles. Expected issuer=patient, prover=hospital, verifier=insurance",
+            onchain_root=latest_root_entry.merkle_root,
+            status="rejected",
+            nullifier_used=False,
+        )
+
+    try:
+        workflow_issuer_wallet = _normalize_address(
+            str(workflow_metadata.get("certificate_issuer_wallet", "")),
+            "workflow.certificate_issuer_wallet",
+        )
+    except HTTPException:
+        return reject_response(
+            reason="Invalid workflow certificate_issuer_wallet",
+            onchain_root=latest_root_entry.merkle_root,
+            status="rejected",
+            nullifier_used=False,
+        )
+
+    if workflow_issuer_wallet != normalized_patient:
+        return reject_response(
+            reason="Workflow issuer wallet does not match patient address",
+            onchain_root=latest_root_entry.merkle_root,
+            status="rejected",
+            nullifier_used=False,
+        )
+
+    workflow_prover_wallet = str(workflow_metadata.get("prover_wallet", "")).strip()
+    if not is_address(workflow_prover_wallet):
+        return reject_response(
+            reason="Invalid workflow prover_wallet",
+            onchain_root=latest_root_entry.merkle_root,
+            status="rejected",
+            nullifier_used=False,
+        )
+
+    intended_use = str(workflow_metadata.get("intended_use", "")).strip().lower()
+    if intended_use and intended_use != "insurance-claim-review":
+        return reject_response(
+            reason="Invalid workflow intended_use",
+            onchain_root=latest_root_entry.merkle_root,
+            status="rejected",
             nullifier_used=False,
         )
 
@@ -693,7 +792,7 @@ def verify_selective_disclosure(
         onchain_root=latest_root_entry.merkle_root,
         claim_params=_claim_params_from_signals(payload.claim_type, payload.public_signals),
         public_signals=payload.public_signals,
-        proof_payload={"proof": payload.proof, "stub": True},
+        proof_payload={"proof": payload.proof, "stub": True, "workflow": workflow_metadata},
         mark_verified=True,
     )
 

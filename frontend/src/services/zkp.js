@@ -10,7 +10,7 @@ function textToField(rawText) {
   return BigInt(`0x${rawHashHex}`) % SNARK_FIELD;
 }
 
-export async function generateMedicalProof(rawText, anchoredLeafHash) {
+export async function generateMedicalProof(rawText, anchoredLeafHash, options = {}) {
   const poseidon = await buildPoseidon();
   const rawDataHash = textToField(rawText);
   const poseidonLeaf = poseidon([rawDataHash]);
@@ -36,6 +36,12 @@ export async function generateMedicalProof(rawText, anchoredLeafHash) {
 
   const verified = await snarkjs.groth16.verify(verificationKey, publicSignals, proof);
 
+  const workflow =
+    options.workflow && typeof options.workflow === "object" ? options.workflow : undefined;
+
+  const metadata =
+    options.metadata && typeof options.metadata === "object" ? options.metadata : undefined;
+
   return {
     scheme: "groth16",
     generated_at: new Date().toISOString(),
@@ -44,6 +50,8 @@ export async function generateMedicalProof(rawText, anchoredLeafHash) {
     public_signals: publicSignals,
     proof,
     verified,
+    ...(workflow ? { workflow } : {}),
+    ...(metadata ? { metadata } : {}),
   };
 }
 

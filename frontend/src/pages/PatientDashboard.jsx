@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 
 import { useMetaMask } from "../hooks/useMetaMask";
-import { getPatientRecords, getSelectiveDisclosureAuditLogs } from "../services/api";
+import { getPatientRecords } from "../services/api";
 import { getBrowserProvider, getRegistryContract } from "../services/contract";
 import { decryptRawText } from "../services/crypto";
 import { buildPatientAccessTypedData, signTypedData } from "../services/eip712";
@@ -36,76 +36,14 @@ const BLUE_ACTION_MENU_ITEM_CLASS =
 const ACTION_META_CLASS =
   "text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400";
 
-const SELECTIVE_CLAIM_FILTERS = [
-  { value: "all", label: "All Claim Types" },
-  { value: "HAS_CATEGORY", label: "Has Category" },
-  { value: "LAB_IN_RANGE", label: "Lab In Range" },
-  { value: "NO_DISEASE", label: "No Disease" },
-];
-
-const SELECTIVE_STATUS_FILTERS = [
-  { value: "all", label: "All Statuses" },
-  { value: "generated", label: "Generated" },
-  { value: "verified", label: "Verified" },
-  { value: "rejected", label: "Rejected" },
-  { value: "expired", label: "Expired" },
-  { value: "error", label: "Error" },
-];
-
-function formatEpochTimestamp(epochSeconds) {
-  if (epochSeconds === null || epochSeconds === undefined || epochSeconds === "") {
-    return "-";
-  }
-
-  const numeric = Number(epochSeconds);
-  if (!Number.isFinite(numeric)) {
-    return String(epochSeconds);
-  }
-
-  return new Date(numeric * 1000).toLocaleString();
-}
-
-function getSelectiveAuditStatusBadge(status, valid) {
-  const normalized = String(status || "").toLowerCase();
-
-  if (normalized === "verified" && valid) {
-    return {
-      label: "verified",
-      className: "bg-emerald-300/20 text-emerald-100",
-    };
-  }
-
-  if (normalized === "generated") {
-    return {
-      label: "generated",
-      className: "bg-cyan-300/20 text-cyan-100",
-    };
-  }
-
-  if (normalized === "expired") {
-    return {
-      label: "expired",
-      className: "bg-amber-300/20 text-amber-100",
-    };
-  }
-
-  if (normalized === "rejected" || valid === false) {
-    return {
-      label: normalized || "rejected",
-      className: "bg-red-300/20 text-red-100",
-    };
-  }
-
-  if (normalized === "error") {
-    return {
-      label: "error",
-      className: "bg-amber-300/20 text-amber-100",
-    };
-  }
-
+function buildInsuranceWorkflowContext({ patientWallet, proverWallet }) {
   return {
-    label: normalized || "unknown",
-    className: "bg-slate-300/20 text-slate-100",
+    certificate_issuer_role: "patient",
+    prover_role: "hospital",
+    verifier_role: "insurance",
+    certificate_issuer_wallet: patientWallet || "",
+    prover_wallet: proverWallet || "",
+    intended_use: "insurance-claim-review",
   };
 }
 
@@ -121,11 +59,6 @@ export default function PatientDashboard() {
   const [isPreparingQr, setIsPreparingQr] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
-  const [selectiveClaimFilter, setSelectiveClaimFilter] = useState("all");
-  const [selectiveStatusFilter, setSelectiveStatusFilter] = useState("all");
-  const [selectiveAuditLogs, setSelectiveAuditLogs] = useState([]);
-  const [isLoadingSelectiveAudit, setIsLoadingSelectiveAudit] = useState(false);
-  const [selectiveAuditError, setSelectiveAuditError] = useState("");
   const [confirmDialog, setConfirmDialog] = useState({
     isOpen: false,
     title: "",
@@ -210,20 +143,6 @@ export default function PatientDashboard() {
     };
   }, [isActionMenuOpen]);
 
-  useEffect(() => {
-    if (!account) {
-      setSelectiveAuditLogs([]);
-      setSelectiveAuditError("");
-      return;
-    }
-
-    const run = async () => {
-      await refreshSelectiveAuditLogs(true);
-    };
-
-    void run();
-  }, [account, selectiveClaimFilter, selectiveStatusFilter]);
-
   const requestConfirmation = ({
     title,
     message,
@@ -252,35 +171,6 @@ export default function PatientDashboard() {
     if (confirmResolverRef.current) {
       confirmResolverRef.current(approved);
       confirmResolverRef.current = null;
-    }
-  };
-
-  const refreshSelectiveAuditLogs = async (silent = false) => {
-    if (!account) {
-      if (!silent) {
-        setSelectiveAuditError("Connect patient wallet first.");
-      }
-      return;
-    }
-
-    try {
-      setIsLoadingSelectiveAudit(true);
-      setSelectiveAuditError("");
-
-      const response = await getSelectiveDisclosureAuditLogs({
-        patient_address: account,
-        claim_type: selectiveClaimFilter === "all" ? "" : selectiveClaimFilter,
-        status: selectiveStatusFilter === "all" ? "" : selectiveStatusFilter,
-        limit: 20,
-      });
-
-      setSelectiveAuditLogs(Array.isArray(response.items) ? response.items : []);
-    } catch (error) {
-      if (!silent) {
-        setSelectiveAuditError(error?.message || "Failed to load selective audit logs.");
-      }
-    } finally {
-      setIsLoadingSelectiveAudit(false);
     }
   };
 
@@ -326,7 +216,6 @@ export default function PatientDashboard() {
       setShareQr(null);
       setCopyStatus("");
       setIsActionMenuOpen(false);
-      await refreshSelectiveAuditLogs(true);
 
       const failedDecryptCount = decryptedRecords.filter((record) => record.decrypt_error).length;
       if (failedDecryptCount > 0) {
@@ -363,8 +252,19 @@ export default function PatientDashboard() {
   };
 
   const generateZkCertificate = async (record) => {
-    const certificate = await generateMedicalProof(record.decrypted_text, record.leaf_hash);
-    downloadCertificateJson(`zk-certificate-record-${record.id}.json`, certificate);
+    const workflow = buildInsuranceWorkflowContext({
+      patientWallet: account,
+      proverWallet: record.doctor_address,
+    });
+
+    const certificate = await generateMedicalProof(record.decrypted_text, record.leaf_hash, {
+      workflow,
+      metadata: {
+        record_id: record.id,
+      },
+    });
+
+    downloadCertificateJson(`patient-certificate-record-${record.id}.json`, certificate);
   };
 
   const getOnChainRootForAccount = async () => {
@@ -373,25 +273,36 @@ export default function PatientDashboard() {
     return contract.getRoot(account);
   };
 
-  const buildVerificationPackage = (record, onChainRoot) => ({
-    package_version: "1.0",
-    generated_at: new Date().toISOString(),
-    patient_address: account,
-    doctor_address: record.doctor_address,
-    record_id: record.id,
-    leaf_hash: record.leaf_hash,
-    merkle_proof: record.merkle_proof || [],
-    merkle_root: onChainRoot,
-    contract_address: import.meta.env.VITE_CONTRACT_ADDRESS || "",
-    chain_id: Number(import.meta.env.VITE_SEPOLIA_CHAIN_ID || 11155111),
-    tx_hash: record.tx_hash || "",
-  });
+  const buildVerificationPackage = (record, onChainRoot) => {
+    const workflow = buildInsuranceWorkflowContext({
+      patientWallet: account,
+      proverWallet: record.doctor_address,
+    });
+
+    return {
+      package_version: "1.1",
+      generated_at: new Date().toISOString(),
+      patient_address: account,
+      doctor_address: record.doctor_address,
+      record_id: record.id,
+      leaf_hash: record.leaf_hash,
+      merkle_proof: record.merkle_proof || [],
+      merkle_root: onChainRoot,
+      contract_address: import.meta.env.VITE_CONTRACT_ADDRESS || "",
+      chain_id: Number(import.meta.env.VITE_SEPOLIA_CHAIN_ID || 11155111),
+      tx_hash: record.tx_hash || "",
+      workflow,
+    };
+  };
 
   const exportVerificationPackage = async (record) => {
     const onChainRoot = await getOnChainRootForAccount();
     const verificationPackage = buildVerificationPackage(record, onChainRoot);
 
-    downloadCertificateJson(`verification-package-record-${record.id}.json`, verificationPackage);
+    downloadCertificateJson(
+      `insurance-verification-package-record-${record.id}.json`,
+      verificationPackage
+    );
   };
 
   const prepareVerificationQr = async (record) => {
@@ -430,7 +341,7 @@ export default function PatientDashboard() {
 
     try {
       await navigator.clipboard.writeText(shareQr.token);
-      setCopyStatus("Token copied. Paste it in Third-Party Verifier page.");
+      setCopyStatus("Token copied. Paste it in Insurance Verifier page.");
     } catch {
       setCopyStatus("Unable to access clipboard. Copy token manually from the text box.");
     }
@@ -441,9 +352,9 @@ export default function PatientDashboard() {
 
     try {
       await navigator.clipboard.writeText(shareQr.verifierUrl);
-      setCopyStatus("Verifier link copied. Open it on third-party device.");
+      setCopyStatus("Insurance verifier link copied. Open it on insurer device.");
     } catch {
-      setCopyStatus("Unable to access clipboard. Copy verifier link manually.");
+      setCopyStatus("Unable to access clipboard. Copy insurance verifier link manually.");
     }
   };
 
@@ -549,8 +460,8 @@ export default function PatientDashboard() {
     }
 
     const approved = await requestConfirmation({
-      title: "Generate ZK Certificate",
-      message: `Download ZK certificate for ${selectedRecords.length} selected record(s)?`,
+      title: "Generate Patient Certificate",
+      message: `Download patient-issued certificate for ${selectedRecords.length} selected record(s)?`,
       confirmLabel: "Generate & Download",
       cancelLabel: "Cancel",
     });
@@ -572,12 +483,12 @@ export default function PatientDashboard() {
       }
 
       if (failedCount > 0) {
-        setErrorMessage(`${failedCount} ZK certificate(s) failed to generate.`);
+        setErrorMessage(`${failedCount} patient certificate(s) failed to generate.`);
       }
     } catch (error) {
       setErrorMessage(
         error?.message ||
-          "Unable to create ZK certificate. Ensure circuit artifacts exist in frontend/public/zk."
+          "Unable to create patient certificate. Ensure circuit artifacts exist in frontend/public/zk."
       );
     } finally {
       setIsGeneratingCertificates(false);
@@ -591,8 +502,8 @@ export default function PatientDashboard() {
     }
 
     const approved = await requestConfirmation({
-      title: "Export Verification Package",
-      message: `Download verification package for ${selectedRecords.length} selected record(s)?`,
+      title: "Export Insurance Package",
+      message: `Download insurance verification package for ${selectedRecords.length} selected record(s)?`,
       confirmLabel: "Export & Download",
       cancelLabel: "Cancel",
     });
@@ -611,7 +522,7 @@ export default function PatientDashboard() {
         try {
           const verificationPackage = buildVerificationPackage(record, onChainRoot);
           downloadCertificateJson(
-            `verification-package-record-${record.id}.json`,
+            `insurance-verification-package-record-${record.id}.json`,
             verificationPackage
           );
         } catch {
@@ -620,10 +531,10 @@ export default function PatientDashboard() {
       }
 
       if (failedCount > 0) {
-        setErrorMessage(`${failedCount} verification package(s) failed to export.`);
+        setErrorMessage(`${failedCount} insurance package(s) failed to export.`);
       }
     } catch (error) {
-      setErrorMessage(error?.message || "Failed to export verification package.");
+      setErrorMessage(error?.message || "Failed to export insurance verification package.");
     } finally {
       setIsExportingPackages(false);
     }
@@ -755,7 +666,7 @@ export default function PatientDashboard() {
                     disabled={!selectedRecords.length || isGeneratingCertificates}
                     className={BLUE_ACTION_MENU_ITEM_CLASS}
                   >
-                    <span>{isGeneratingCertificates ? "Generating..." : "Generate ZK Certificate"}</span>
+                    <span>{isGeneratingCertificates ? "Generating..." : "Generate Patient Certificate"}</span>
                     <span className={ACTION_META_CLASS}>zk</span>
                   </button>
 
@@ -765,7 +676,7 @@ export default function PatientDashboard() {
                     disabled={!selectedRecords.length || isExportingPackages}
                     className={BLUE_ACTION_MENU_ITEM_CLASS}
                   >
-                    <span>{isExportingPackages ? "Exporting..." : "Export Verification Package"}</span>
+                    <span>{isExportingPackages ? "Exporting..." : "Export Insurance Package"}</span>
                     <span className={ACTION_META_CLASS}>json</span>
                   </button>
 
@@ -775,7 +686,7 @@ export default function PatientDashboard() {
                     disabled={selectedRecords.length !== 1 || isPreparingQr}
                     className={BLUE_ACTION_MENU_ITEM_CLASS}
                   >
-                    <span>{isPreparingQr ? "Preparing..." : "Show QR Token"}</span>
+                    <span>{isPreparingQr ? "Preparing..." : "Show Insurance QR Token"}</span>
                     <span className={ACTION_META_CLASS}>qr</span>
                   </button>
                 </div>
@@ -879,122 +790,12 @@ export default function PatientDashboard() {
         </div>
       </article>
 
-      <article className="panel rounded-3xl p-5 shadow-glow">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-[0.14em] text-slate-300">Selective Disclosure Activity</p>
-            <p className="mt-2 text-sm text-slate-200">
-              Lihat riwayat claim selective disclosure untuk wallet pasien ini.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="text-xs text-slate-300">
-              Claim Type
-              <select
-                value={selectiveClaimFilter}
-                onChange={(event) => setSelectiveClaimFilter(event.target.value)}
-                className="mt-1 rounded-xl border border-white/20 bg-slate-950/40 px-3 py-2 text-xs text-white outline-none focus:border-blue-300"
-              >
-                {SELECTIVE_CLAIM_FILTERS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="text-xs text-slate-300">
-              Status
-              <select
-                value={selectiveStatusFilter}
-                onChange={(event) => setSelectiveStatusFilter(event.target.value)}
-                className="mt-1 rounded-xl border border-white/20 bg-slate-950/40 px-3 py-2 text-xs text-white outline-none focus:border-blue-300"
-              >
-                {SELECTIVE_STATUS_FILTERS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <button
-              type="button"
-              onClick={() => void refreshSelectiveAuditLogs()}
-              disabled={!account || isLoadingSelectiveAudit}
-              className={BLUE_TINY_BUTTON_CLASS}
-            >
-              {isLoadingSelectiveAudit ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
-        </div>
-
-        {selectiveAuditError && (
-          <div className="mt-4 rounded-xl border border-red-200/40 bg-red-500/10 p-3 text-sm text-red-100">
-            {selectiveAuditError}
-          </div>
-        )}
-
-        <div className="mt-4 overflow-x-auto">
-          <table className="min-w-full divide-y divide-white/10 text-left text-xs">
-            <thead className="bg-slate-900/35 text-slate-200">
-              <tr>
-                <th className="px-3 py-2 font-semibold">Created</th>
-                <th className="px-3 py-2 font-semibold">Claim</th>
-                <th className="px-3 py-2 font-semibold">Status</th>
-                <th className="px-3 py-2 font-semibold">Expires</th>
-                <th className="px-3 py-2 font-semibold">Reason</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5 text-slate-100">
-              {selectiveAuditLogs.map((logItem) => {
-                const badge = getSelectiveAuditStatusBadge(logItem.status, logItem.valid);
-
-                return (
-                  <tr key={logItem.id}>
-                    <td className="whitespace-nowrap px-3 py-2 text-slate-300">{logItem.created_at}</td>
-                    <td className="px-3 py-2 text-slate-100">{logItem.claim_type}</td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] ${badge.className}`}
-                      >
-                        {badge.label}
-                      </span>
-                      {logItem.nullifier_used && (
-                        <span className="ml-2 inline-flex rounded-full bg-amber-300/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-amber-100">
-                          replay blocked
-                        </span>
-                      )}
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2 text-slate-300">
-                      {formatEpochTimestamp(logItem.expires_at)}
-                    </td>
-                    <td className="max-w-lg px-3 py-2 text-slate-300">{logItem.reason || "-"}</td>
-                  </tr>
-                );
-              })}
-
-              {selectiveAuditLogs.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="px-3 py-6 text-center text-slate-300">
-                    {account
-                      ? "No selective disclosure logs found for current filters."
-                      : "Connect wallet to load selective disclosure logs."}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </article>
-
       {shareQr && (
         <article ref={qrSectionRef} className="panel rounded-3xl p-6 shadow-glow sm:p-8">
-          <h2 className="font-heading text-2xl font-bold text-white">Third-Party Share QR</h2>
+          <h2 className="font-heading text-2xl font-bold text-white">Insurance Share QR</h2>
           <p className="mt-2 text-sm text-slate-200">
-            Share this QR code to insurers or other reviewers. Scanning it opens the verifier page
-            with the token attached, so they can load verification data instantly.
+            Patient issues this certificate token to insurer. Scanning it opens the insurance
+            verifier page with package data attached.
           </p>
 
           <div className="mt-5 grid gap-6 lg:grid-cols-[300px_1fr]">
@@ -1008,7 +809,7 @@ export default function PatientDashboard() {
             </div>
 
             <div>
-              <p className="text-sm font-semibold text-slate-100">Verifier Link</p>
+              <p className="text-sm font-semibold text-slate-100">Insurance Verifier Link</p>
               <textarea
                 readOnly
                 value={shareQr.verifierUrl}
@@ -1028,7 +829,7 @@ export default function PatientDashboard() {
                   onClick={copyVerifierLink}
                   className={BLUE_TINY_BUTTON_CLASS}
                 >
-                  Copy Verifier Link
+                  Copy Insurance Link
                 </button>
 
                 <a
@@ -1037,7 +838,7 @@ export default function PatientDashboard() {
                   rel="noreferrer"
                   className={BLUE_TINY_BUTTON_CLASS}
                 >
-                  Open Verifier Link
+                  Open Insurance Link
                 </a>
 
                 <button
