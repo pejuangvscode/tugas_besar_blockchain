@@ -632,7 +632,7 @@ export default function DoctorDashboard() {
                 href={explorerLink}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex rounded-full border border-emerald-100/40 px-3 py-1 text-xs font-bold uppercase tracking-[0.08em] text-emerald-50 hover:bg-emerald-100/15"
+                className="inline-flex items-center rounded-full border border-emerald-100 bg-emerald-100 px-3 py-1 text-xs font-extrabold uppercase tracking-[0.08em] text-slate-950 transition hover:bg-emerald-50"
               >
                 View on Sepolia Etherscan
               </a>
