@@ -1,16 +1,153 @@
 # Sovereign Medical Records DApp
 
-A full-stack decentralized app for sovereign medical records with:
+A full-stack decentralized application for **sovereign, encrypted medical records** on Ethereum. Patients retain cryptographic ownership of their health data; doctors anchor integrity proofs on-chain; third parties can verify records without ever accessing plaintext.
 
-- React + Vite + Tailwind + ethers.js + MetaMask
-- FastAPI + PostgreSQL
-- Ethereum Sepolia smart contract anchoring
-- Merkle integrity proofs
-- zk-SNARK client-side certificate generation with Circom + snarkjs
+**Live deployment:**
+- Frontend: https://raphamedical.vercel.app
+- Backend API: https://raphamedical.fly.dev
+- Smart Contract (Sepolia): `0x1e325e9243dc886026342d8628A4465bdB50d46C`
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                        FRONTEND                         │
+│   React 18 + Vite + Tailwind + ethers.js + snarkjs     │
+│                                                         │
+│  /doctor  →  Create records, anchor Merkle root        │
+│  /patient →  Decrypt, verify, share records            │
+│  /verifier→  Verify integrity from shared link/QR      │
+└──────────────┬────────────────────┬────────────────────┘
+               │ HTTP REST          │ ethers.js
+               ▼                    ▼
+┌──────────────────────┐   ┌───────────────────────────┐
+│    BACKEND (FastAPI) │   │  ETHEREUM SEPOLIA          │
+│    PostgreSQL        │   │                            │
+│                      │   │  MedicalRecordRegistry     │
+│  - Encrypted records │   │  - anchorRoot()            │
+│  - Merkle proofs     │   │  - getRoot()               │
+│  - Wallet roles      │   │                            │
+│  - ZK claim audit    │   │  SelectiveDisclosure       │
+│  - SMT snapshots     │   │  VerifierManager           │
+└──────────────────────┘   │  - submitSelectiveClaim()  │
+                           │  - Nullifier replay guard  │
+                           └───────────────────────────┘
+```
+
+**Cryptographic stack:**
+- Record storage: `AES-256-GCM` (key = `SHA256(patient_wallet_address)`)
+- Integrity: `SHA-256 Merkle tree` anchored on-chain
+- Authentication: `EIP-712` typed-data signatures (doctor + patient)
+- ZK proofs: `Groth16` with `Circom 2.1.6` + `snarkjs`, Poseidon hashing
+
+---
+
+## Table of Contents
+
+1. [Prerequisites](#prerequisites)
+2. [Environment Variables](#environment-variables)
+3. [Smart Contract Module](#1-smart-contract-module)
+4. [Backend Module](#2-backend-module-fastapi)
+5. [Frontend Module](#3-frontend-module-react)
+6. [Circuits & ZK Artifacts](#4-circuits--zk-artifacts)
+7. [Selective Disclosure](#5-selective-disclosure)
+8. [Database Schema](#database-schema)
+9. [API Reference](#api-reference)
+10. [Security & Design Notes](#security--design-notes)
+11. [User Flows](#user-flows)
+12. [Deployment](#deployment)
+
+---
+
+## Prerequisites
+
+| Tool | Version |
+|------|---------|
+| Node.js | ≥ 20 |
+| Python | ≥ 3.11 |
+| Docker + Docker Compose | Any recent version |
+| `circom` | 2.1.6 (for circuit builds) |
+| MetaMask | Browser extension |
+
+---
+
+## Environment Variables
+
+### Root `.env`
+
+```env
+# Sepolia RPC (Alchemy, Infura, etc.)
+SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
+
+# Wallet used for deployments
+DEPLOYER_PRIVATE_KEY=<your-private-key>
+
+# Deployed contract addresses
+CONTRACT_ADDRESS=0x1e325e9243dc886026342d8628A4465bdB50d46C
+SELECTIVE_MANAGER_ADDRESS=<deployed-manager-address>
+
+# Optional: base Groth16 verifier addresses (if pre-deployed)
+HAS_CATEGORY_GROTH16_VERIFIER_ADDRESS=
+LAB_IN_RANGE_GROTH16_VERIFIER_ADDRESS=
+NO_DISEASE_GROTH16_VERIFIER_ADDRESS=
+
+# Optional: manager owner if different from deployer
+SELECTIVE_OWNER_ADDRESS=
+```
+
+### `backend/.env`
+
+```env
+DATABASE_URL=postgresql://user:pass@localhost:5432/medrecords
+CONTRACT_ADDRESS=0x1e325e9243dc886026342d8628A4465bdB50d46C
+SELECTIVE_MANAGER_ADDRESS=<deployed-manager-address>
+SEPOLIA_CHAIN_ID=11155111
+FRONTEND_ORIGIN=http://localhost:5173
+```
+
+### `frontend/.env`
+
+```env
+VITE_BACKEND_URL=http://localhost:8000
+VITE_CONTRACT_ADDRESS=0x1e325e9243dc886026342d8628A4465bdB50d46C
+VITE_SELECTIVE_MANAGER_ADDRESS=<deployed-manager-address>
+```
+
+---
 
 ## 1) Smart Contract Module
 
-### Install and test
+### Contracts
+
+#### `MedicalRecordRegistry.sol`
+Core registry for anchoring patient Merkle roots on-chain.
+
+| Function | Access | Description |
+|----------|--------|-------------|
+| `anchorRoot(merkleRoot, patientAddress)` | Authorized doctors | Anchor a new Merkle root for a patient |
+| `getRoot(patientAddress)` | Public | Retrieve latest anchored root |
+| `addAuthorizedDoctor(doctor)` | Owner | Authorize a doctor wallet |
+| `removeAuthorizedDoctor(doctor)` | Owner | Deauthorize a doctor wallet |
+
+Events: `RootAnchored`, `DoctorAuthorizationUpdated`
+
+#### `SelectiveDisclosureVerifierManager.sol`
+Manages per-claim-type Groth16 verifiers and on-chain claim registration.
+
+| Claim Type | ID | Description |
+|------------|-----|-------------|
+| `HAS_CATEGORY` | 1 | Prove patient has records in a medical category |
+| `LAB_IN_RANGE` | 2 | Prove lab value is within a range (without revealing it) |
+| `NO_DISEASE` | 3 | Prove patient has no record for a disease code (Sparse Merkle Tree) |
+
+Security: nullifier-based replay protection, claim expiry, root consistency check against registry.
+
+#### `Groth16VerifierAdapter.sol`
+Adapter that translates snarkjs-encoded proof bytes into the Groth16 verifier ABI (9 public signals).
+
+### Install & Test
 
 ```bash
 npm install
@@ -20,96 +157,83 @@ npm run test
 
 ### Deploy to Sepolia
 
-1. Copy `.env.example` to `.env` in project root.
-2. Set `SEPOLIA_RPC_URL` and `DEPLOYER_PRIVATE_KEY`.
-3. Deploy:
+1. Copy `.env.example` to `.env` and fill `SEPOLIA_RPC_URL` and `DEPLOYER_PRIVATE_KEY`.
+2. Deploy the main registry:
 
 ```bash
 npm run deploy:sepolia
 ```
 
-4. Copy deployed address into:
-- `.env` as `CONTRACT_ADDRESS`
-- `frontend/.env` as `VITE_CONTRACT_ADDRESS`
-- `backend/.env` as `CONTRACT_ADDRESS`
+3. Copy the output address into all three `.env` files:
+   - Root `.env` → `CONTRACT_ADDRESS`
+   - `backend/.env` → `CONTRACT_ADDRESS`
+   - `frontend/.env` → `VITE_CONTRACT_ADDRESS`
 
-### Deploy Selective Disclosure Contracts (Optional, for new selective flow)
+### Deploy Selective Disclosure Contracts (Optional)
 
-Use this only when enabling selective disclosure claim verification.
-
-1. Ensure `CONTRACT_ADDRESS` (or `REGISTRY_ADDRESS`) points to deployed `MedicalRecordRegistry`.
-2. (Optional) Set `SELECTIVE_OWNER_ADDRESS` if manager owner is not the deployer wallet.
-3. (Optional) Set base Groth16 verifier addresses if already deployed:
-   - `HAS_CATEGORY_GROTH16_VERIFIER_ADDRESS`
-   - `LAB_IN_RANGE_GROTH16_VERIFIER_ADDRESS`
-   - `NO_DISEASE_GROTH16_VERIFIER_ADDRESS`
-4. Deploy selective contracts:
+1. Ensure `CONTRACT_ADDRESS` points to the deployed `MedicalRecordRegistry`.
+2. Optionally set `SELECTIVE_OWNER_ADDRESS` if the manager owner differs from the deployer.
+3. Optionally pre-fill base Groth16 verifier addresses if already deployed.
+4. Deploy:
 
 ```bash
 npm run deploy:selective:sepolia
 ```
 
-Deployment output includes:
-- `SELECTIVE_MANAGER_ADDRESS`
-- optional adapter addresses per claim type
+The script outputs `SELECTIVE_MANAGER_ADDRESS` and optional adapter addresses. Update all three `.env` files accordingly. If `SELECTIVE_OWNER_ADDRESS` differs from the deployer, the owner must call `setVerifier` manually to bind adapters.
 
-If `SELECTIVE_OWNER_ADDRESS` differs from deployer address, adapter binding (`setVerifier`) must be executed by owner wallet.
-
-After deployment, update runtime envs/secrets as needed:
-- Root `.env`: keep `CONTRACT_ADDRESS`, add `SELECTIVE_MANAGER_ADDRESS`
-- `backend/.env`: keep `CONTRACT_ADDRESS`, add `SELECTIVE_MANAGER_ADDRESS`
-- `frontend/.env`: keep `VITE_CONTRACT_ADDRESS`, add `VITE_SELECTIVE_MANAGER_ADDRESS` (if frontend integration uses manager)
+---
 
 ## 2) Backend Module (FastAPI)
 
-### Setup
+### Local Setup
 
 ```bash
 cd backend
 python -m venv .venv
-. .venv/Scripts/Activate.ps1
+
+# Windows
+.venv\Scripts\Activate.ps1
+
+# macOS / Linux
+source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-### Run with local Postgres (Docker)
+### Start PostgreSQL (Docker)
 
-From project root:
+From the project root:
 
 ```bash
 docker compose up -d postgres
 ```
 
-### Run API
+This starts a PostgreSQL 16 container (`medrecords-postgres`) on port `5432` with:
+- User: `user`, Password: `pass`, Database: `medrecords`
+
+### Run the API Server
 
 ```bash
 cd backend
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-API docs:
-- http://localhost:8000/docs
+API docs available at: http://localhost:8000/docs
 
-### Deploy Backend via GitHub to Fly.io
+### Run Everything via Docker
 
-1. Edit [backend/fly.toml](backend/fly.toml) and set `app` to your Fly app name.
-2. Create a Fly API token:
-   - `fly tokens create deploy`
-3. Add repository secret in GitHub:
-   - Name: `FLY_API_TOKEN`
-   - Value: your Fly deploy token
-4. Set Fly runtime secrets (once) so backend can boot in production:
-   - `fly secrets set DATABASE_URL=...`
-   - `fly secrets set CONTRACT_ADDRESS=...`
-   - `fly secrets set SEPOLIA_CHAIN_ID=11155111`
-   - `fly secrets set FRONTEND_ORIGIN=https://your-vercel-domain.vercel.app`
-5. Commit and push to `main`.
-6. GitHub Actions workflow [.github/workflows/deploy-backend-fly.yml](.github/workflows/deploy-backend-fly.yml) will deploy backend automatically.
+```bash
+docker compose up -d
+```
 
-The workflow deploys only when backend files or the workflow file itself changes.
+This starts both `postgres` and the `medrecords-backend` container (port `8000`).
+
+---
 
 ## 3) Frontend Module (React)
 
-### Setup and run
+### Setup & Run
 
 ```bash
 cd frontend
@@ -117,146 +241,312 @@ npm install
 npm run dev
 ```
 
-Open:
-- http://localhost:5173
+Open: http://localhost:5173
 
-Available UI pages:
-- `/doctor` → Doctor Page (create record, anchor Merkle root, quick patient list)
-- `/patient` → Patient Page (load/decrypt records, integrity verify, share package as JSON/QR/link)
-- `/verifier` → Third-Party Verifier Page (single flow: verify from patient shared link)
+### Pages
 
-Wallet role routing:
-- User connects wallet first.
-- App reads wallet role from backend (`doctor`, `patient`, `verifier`).
-- User is redirected automatically to role page.
-- If wallet has no role yet, app shows a one-time role selection and stores it in database.
+| Route | Role | Description |
+|-------|------|-------------|
+| `/doctor` | Doctor | Create encrypted records, anchor Merkle root, manage patient list |
+| `/patient` | Patient | Decrypt records, verify integrity, generate share packages (JSON/QR/link) |
+| `/verifier` | Verifier | Verify integrity from a patient-shared link or QR code |
 
-## 4) Circuit + ZK Artifacts
+### Wallet Role Routing
+
+1. User connects MetaMask wallet.
+2. App queries backend for the wallet's role.
+3. Redirects automatically to the role-specific page.
+4. New wallets see a one-time role selection screen; the role is persisted in the database.
+
+### Key Frontend Services
+
+| File | Description |
+|------|-------------|
+| `services/api.js` | Axios HTTP client for backend |
+| `services/contract.js` | Smart contract calls via ethers.js v6 |
+| `services/crypto.js` | AES-256-GCM encrypt/decrypt |
+| `services/zkp.js` | ZK proof generation (snarkjs) |
+| `services/merkle.js` | Merkle tree build and proof verification |
+| `services/eip712.js` | EIP-712 typed-data signing |
+| `services/verificationToken.js` | Encode/decode share links |
+
+---
+
+## 4) Circuits & ZK Artifacts
 
 ### Requirements
 
-- `circom` installed globally
+- `circom` 2.1.6 installed globally
 - Node.js + npm
 
-### Build artifacts and copy to frontend
+### Build Basic Proof Artifacts
 
 ```powershell
 cd circuits
 ./build.ps1
 ```
 
-This produces and copies:
+Compiles `medical_proof.circom` and copies artifacts to:
 - `frontend/public/zk/medical_proof.wasm`
 - `frontend/public/zk/medical_proof_final.zkey`
 - `frontend/public/zk/verification_key.json`
 
-## 5) Selective Disclosure Blueprint (New)
-
-This repository now includes implementation-ready selective disclosure design artifacts:
-
-- Blueprint spec: `docs/selective-disclosure-blueprint.md`
-   - Exact private/public signal model
-   - Commitment and nullifier strategy
-   - Contract verification flow template
-- API examples: `docs/selective-disclosure-api-examples.json`
-   - Prove/verify request-response payload templates
-- Solidity template: `contracts/SelectiveDisclosureVerifierManager.sol`
-   - Claim-type verifier dispatch
-   - Root consistency check against `MedicalRecordRegistry`
-   - Nullifier replay protection
-- Groth16 adapter template: `contracts/Groth16VerifierAdapter.sol`
-   - Adapts snarkjs-style proof bytes into fixed Groth16 verifier ABI
-
-Selective circuit skeleton compile (R1CS + SYM):
+### Build Selective Disclosure Circuits (R1CS + SYM)
 
 ```powershell
 cd circuits
 ./build-selective.ps1
 ```
 
-## API Endpoints
+Compiles:
+- `selective_disclosure/has_category.circom`
+- `selective_disclosure/lab_in_range.circom`
 
-- `POST /records/create`
-- `GET /records/{patient_address}`
-- `GET /records/public/{patient_address}`
-- `POST /records/verify`
-- `PATCH /records/merkle_root/tx_hash`
-- `POST /selective-disclosure/prove` (stub)
-- `POST /selective-disclosure/verify` (stub)
+### Proving System Details
 
-## Security/Design Notes
+- Scheme: **Groth16**
+- Powers of Tau: `powersOfTau28_hez_final_14.ptau`
+- Hash function: **Poseidon** (via circomlibjs)
+- Merkle tree depth: **20**
+- Public signals: **9** — `[claimType, claimKeyA, claimKeyB, claimKeyC, root, patientCommitment, verifierScope, expiresAt, nullifier]`
 
-- Encryption key derivation: `SHA256(patient_wallet_address)`
-- Cipher: `AES-256-GCM`
-- Database stores encrypted JSON only
-- Merkle root anchored on Sepolia by authorized doctor wallets
-- EIP-712 signatures enforced in backend for doctor and patient auth
-- ZK certificate proves Poseidon relationship for private preimage knowledge
+---
 
-## Third-Party Verification Use Case (Insurance / External Party)
+## 5) Selective Disclosure
 
-This project also supports a practical verification scenario for third parties (for example insurance companies or external auditors) with patient consent.
+### Overview
 
-### Goal
+Patients can generate ZK proofs for specific claims about their health data without revealing the underlying records.
 
-Allow third parties to verify that patient data commitment is valid and untampered, without requiring full trust in backend storage.
+### Claim Types
 
-### Verification package (shared by patient)
+**`HAS_CATEGORY` (ID: 1)**
+> Prove: "I have at least one medical record in category X"
+- Private inputs: record data, Merkle path
+- Public outputs: category hash, Merkle root, patient commitment, nullifier
 
-- `patient_address`
-- `leaf_hash`
-- `merkle_proof`
-- `merkle_root`
-- `tx_hash` (recommended for audit)
-- Optional: `zk_certificate.json` for additional off-chain ZKP validation
+**`LAB_IN_RANGE` (ID: 2)**
+> Prove: "My lab value is between A and B"
+- Private inputs: lab value, record data, Merkle path
+- Public outputs: range bounds (hashed), Merkle root, patient commitment, nullifier
 
-### How to use in UI
+**`NO_DISEASE` (ID: 3)** *(planned)*
+> Prove: "I have no record for disease code X" using Sparse Merkle Tree non-membership proof.
 
-1. Patient opens `/patient` and loads records.
-2. Patient clicks `Show QR Token`.
-3. Third party scans QR (or opens shared verifier link).
-4. Verifier page auto-loads package from URL token.
-5. Third party clicks `Verify Package`.
-6. App checks on-chain root via smart contract `getRoot(patient)` and validates Merkle proof.
+### Design Artifacts
 
-### Validation logic
+| File | Description |
+|------|-------------|
+| `docs/selective-disclosure-blueprint.md` | Full specification: signals, commitments, nullifier strategy, security checklist |
+| `docs/selective-disclosure-api-examples.json` | Prove/verify request-response payload examples |
+| `contracts/SelectiveDisclosureVerifierManager.sol` | On-chain claim verifier dispatcher |
+| `contracts/Groth16VerifierAdapter.sol` | snarkjs-to-Groth16-ABI adapter |
 
-1. Third party calls `getRoot(patient_address)` from smart contract.
-2. Compare returned `onChainRoot` with shared `merkle_root`.
-3. Verify Merkle proof using `leaf_hash`, `merkle_proof`, and `onChainRoot`.
-4. Mark result as `VALID` only if both root comparison and proof verification pass.
-5. Optionally validate `zk_certificate.json` using `verification_key.json` for extra cryptographic assurance.
+---
 
-### Privacy note
-
-For integrity verification, third party does not need full plaintext medical records. Patient can share minimum data required for proof validation.
-
-## Database DDL (PostgreSQL)
+## Database Schema
 
 ```sql
+-- Encrypted patient records with Merkle proofs
 CREATE TABLE medical_records (
-  id SERIAL PRIMARY KEY,
-  patient_address TEXT NOT NULL,
-  doctor_address TEXT NOT NULL,
-  encrypted_data TEXT NOT NULL,
-  leaf_hash TEXT NOT NULL,
-  merkle_proof JSONB,
-  created_at TIMESTAMP DEFAULT NOW()
+    id              SERIAL PRIMARY KEY,
+    patient_address TEXT      NOT NULL,
+    doctor_address  TEXT      NOT NULL,
+    encrypted_data  TEXT      NOT NULL,
+    leaf_hash       TEXT      NOT NULL,
+    merkle_proof    JSONB,
+    created_at      TIMESTAMP DEFAULT NOW()
 );
 
+-- On-chain anchored Merkle roots
 CREATE TABLE merkle_roots (
-  id SERIAL PRIMARY KEY,
-  patient_address TEXT NOT NULL,
-  merkle_root TEXT NOT NULL,
-  tx_hash TEXT,
-  created_at TIMESTAMP DEFAULT NOW()
+    id              SERIAL PRIMARY KEY,
+    patient_address TEXT      NOT NULL,
+    merkle_root     TEXT      NOT NULL,
+    tx_hash         TEXT,
+    created_at      TIMESTAMP DEFAULT NOW()
 );
 
+-- One-time wallet role assignments
 CREATE TABLE wallet_roles (
-   id SERIAL PRIMARY KEY,
-   wallet_address TEXT NOT NULL UNIQUE,
-   role TEXT NOT NULL,
-   created_at TIMESTAMP DEFAULT NOW(),
-   updated_at TIMESTAMP DEFAULT NOW()
+    id              SERIAL PRIMARY KEY,
+    wallet_address  TEXT      NOT NULL UNIQUE,
+    role            TEXT      NOT NULL,   -- 'doctor' | 'patient' | 'verifier'
+    created_at      TIMESTAMP DEFAULT NOW(),
+    updated_at      TIMESTAMP DEFAULT NOW()
+);
+
+-- Audit log for selective disclosure claims
+CREATE TABLE selective_claim_audit_logs (
+    id              SERIAL PRIMARY KEY,
+    patient_address TEXT,
+    claim_type      INT,
+    nullifier       TEXT,
+    tx_hash         TEXT,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+-- Replay protection: consumed nullifiers
+CREATE TABLE selective_nullifier_used (
+    nullifier       TEXT PRIMARY KEY,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+-- Sparse Merkle Tree snapshots for NO_DISEASE proofs
+CREATE TABLE no_disease_smt_snapshots (
+    id              SERIAL PRIMARY KEY,
+    patient_address TEXT NOT NULL,
+    root            TEXT NOT NULL,
+    snapshot        JSONB,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE no_disease_smt_leaf_index (
+    id              SERIAL PRIMARY KEY,
+    patient_address TEXT NOT NULL,
+    disease_code    TEXT NOT NULL,
+    leaf_index      INT  NOT NULL
+);
+
+CREATE TABLE no_disease_smt_proof_cache (
+    id              SERIAL PRIMARY KEY,
+    patient_address TEXT NOT NULL,
+    disease_code    TEXT NOT NULL,
+    proof           JSONB,
+    created_at      TIMESTAMP DEFAULT NOW()
 );
 ```
+
+---
+
+## API Reference
+
+### Records
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/records/create` | EIP-712 (doctor) | Create an encrypted medical record |
+| `GET` | `/records/{patient_address}` | EIP-712 (patient) | Retrieve decrypted records for a patient |
+| `GET` | `/records/public/{patient_address}` | None | Public Merkle verification package |
+| `POST` | `/records/verify` | None | Verify a Merkle proof against on-chain root |
+| `PATCH` | `/records/merkle_root/tx_hash` | EIP-712 (doctor) | Link an anchored TX hash to a Merkle root |
+
+### Roles
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/roles/{wallet_address}` | None | Get the role for a wallet address |
+| `POST` | `/roles` | EIP-712 | Set wallet role (one-time, irreversible) |
+
+### Selective Disclosure
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/selective-disclosure/prove` | EIP-712 (patient) | Generate a ZK proof for a selective claim |
+| `POST` | `/selective-disclosure/verify` | None | Verify a ZK proof off-chain |
+
+### System
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Health check (returns `{"status": "ok"}`) |
+
+Interactive docs: http://localhost:8000/docs
+
+---
+
+## Security & Design Notes
+
+### Encryption
+
+- **Key derivation:** `SHA256(lowercase(patient_wallet_address))`
+- **Cipher:** AES-256-GCM (authenticated encryption)
+- **Storage:** Database stores only ciphertext — plaintext never persists server-side
+
+### Integrity
+
+- Records are hashed as Merkle leaves
+- Doctor anchors the Merkle root on-chain via `anchorRoot()`
+- Any tamper in the off-chain database invalidates the Merkle proof
+- Third parties verify by calling `getRoot(patient)` on-chain and re-running the proof
+
+### Authentication
+
+- All write operations require **EIP-712 typed-data signatures**
+- Backend verifies signatures via `eth-account`
+- Replay protection via nonces
+
+### Zero-Knowledge Proofs
+
+- Poseidon-based commitment: `commitment = Poseidon(patientAddress, secret)`
+- Nullifier per claim: `nullifier = Poseidon(commitment, claimType, nonce)`
+- Claims include expiry timestamp and verifier scope — proofs cannot be reused across verifiers
+
+### Privacy
+
+- Third-party verifiers receive only: `patient_address`, `leaf_hash`, `merkle_proof`, `merkle_root`, `tx_hash`
+- Full plaintext never required for integrity verification
+- Optional `zk_certificate.json` provides additional cryptographic assurance without revealing record contents
+
+---
+
+## User Flows
+
+### Doctor
+
+1. Connect wallet → set role as `doctor`
+2. Fill out patient record form and submit (EIP-712 signature)
+3. Backend encrypts and stores record; returns leaf hash + Merkle proof
+4. When ready, click **Anchor Merkle Root** to send `anchorRoot()` on-chain
+5. Backend stores the TX hash linked to the root
+
+### Patient
+
+1. Connect wallet → set role as `patient`
+2. Load records (backend decrypts and returns plaintext)
+3. Click **Verify Integrity** → app fetches on-chain root and validates Merkle proof
+4. Click **Show QR Token** or **Copy Share Link** to produce a verification package
+5. Optionally generate a **ZK Certificate** for privacy-preserving sharing
+
+### Third-Party Verifier
+
+1. Receive share link or scan QR code from patient
+2. Open `/verifier` — app auto-loads the verification package from URL token
+3. Click **Verify Package**
+4. App calls `getRoot(patient_address)` on-chain and validates Merkle proof
+5. Result: `VALID` (root matches + proof valid) or `INVALID`
+6. Optionally validate `zk_certificate.json` for extra assurance
+
+---
+
+## Deployment
+
+### Frontend (Vercel)
+
+1. Connect the repository to Vercel.
+2. Set root directory to `frontend`.
+3. Add environment variables (`VITE_BACKEND_URL`, `VITE_CONTRACT_ADDRESS`, `VITE_SELECTIVE_MANAGER_ADDRESS`).
+4. Push to `main` — Vercel deploys automatically.
+
+### Backend (Fly.io via GitHub Actions)
+
+1. Edit `backend/fly.toml` — set `app` to your Fly app name.
+2. Create a Fly deploy token: `fly tokens create deploy`
+3. Add `FLY_API_TOKEN` as a GitHub repository secret.
+4. Set Fly runtime secrets:
+
+```bash
+fly secrets set DATABASE_URL=postgresql://...
+fly secrets set CONTRACT_ADDRESS=0x...
+fly secrets set SELECTIVE_MANAGER_ADDRESS=0x...
+fly secrets set SEPOLIA_CHAIN_ID=11155111
+fly secrets set FRONTEND_ORIGIN=https://your-app.vercel.app
+```
+
+5. Push to `main` — GitHub Actions workflow (`.github/workflows/deploy-backend-fly.yml`) deploys automatically when backend files change.
+
+### Database (Supabase / Any PostgreSQL)
+
+Set `DATABASE_URL` to any PostgreSQL 14+ connection string. The backend uses SQLAlchemy with `create_all()` on startup — tables are created automatically.
+
+For production, Supabase (AWS ap-southeast-1) is recommended. Paste the pooler connection string as `DATABASE_URL`.
