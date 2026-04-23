@@ -153,36 +153,167 @@ function drawImageToCanvas(image, maxDimension = 0) {
   return canvas;
 }
 
+function cropCanvasFromCenter(sourceCanvas, cropRatio = 1) {
+  const safeCropRatio = Math.min(1, Math.max(0.4, cropRatio));
+  if (safeCropRatio >= 0.999) {
+    return sourceCanvas;
+  }
+
+  const cropWidth = Math.max(1, Math.round(sourceCanvas.width * safeCropRatio));
+  const cropHeight = Math.max(1, Math.round(sourceCanvas.height * safeCropRatio));
+  const sourceX = Math.max(0, Math.floor((sourceCanvas.width - cropWidth) / 2));
+  const sourceY = Math.max(0, Math.floor((sourceCanvas.height - cropHeight) / 2));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = cropWidth;
+  canvas.height = cropHeight;
+
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    return sourceCanvas;
+  }
+
+  context.drawImage(
+    sourceCanvas,
+    sourceX,
+    sourceY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    cropWidth,
+    cropHeight
+  );
+
+  return canvas;
+}
+
+function clampByte(value) {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function cloneImageData(imageData) {
+  return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+}
+
+function toGrayscale(imageData) {
+  const output = cloneImageData(imageData);
+  const data = output.data;
+
+  for (let index = 0; index < data.length; index += 4) {
+    const luminance = Math.round(
+      data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114
+    );
+    data[index] = luminance;
+    data[index + 1] = luminance;
+    data[index + 2] = luminance;
+  }
+
+  return output;
+}
+
+function applyContrast(imageData, contrastFactor = 1.7) {
+  const output = cloneImageData(imageData);
+  const data = output.data;
+  const normalizedContrast = Math.max(0.1, contrastFactor);
+
+  for (let index = 0; index < data.length; index += 4) {
+    data[index] = clampByte((data[index] - 128) * normalizedContrast + 128);
+    data[index + 1] = clampByte((data[index + 1] - 128) * normalizedContrast + 128);
+    data[index + 2] = clampByte((data[index + 2] - 128) * normalizedContrast + 128);
+  }
+
+  return output;
+}
+
+function applyThreshold(imageData, threshold = 140) {
+  const output = toGrayscale(imageData);
+  const data = output.data;
+
+  for (let index = 0; index < data.length; index += 4) {
+    const value = data[index] >= threshold ? 255 : 0;
+    data[index] = value;
+    data[index + 1] = value;
+    data[index + 2] = value;
+  }
+
+  return output;
+}
+
+function decodeImageDataWithJsQr(imageData) {
+  try {
+    const decoded = jsQR(imageData.data, imageData.width, imageData.height, {
+      inversionAttempts: "attemptBoth",
+    });
+    return String(decoded?.data || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function decodeCanvasWithJsQr(canvas) {
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    return "";
+  }
+
+  const baseImageData = context.getImageData(0, 0, canvas.width, canvas.height);
+
+  const decodeAttempts = [
+    baseImageData,
+    toGrayscale(baseImageData),
+    applyContrast(baseImageData, 2),
+    applyContrast(toGrayscale(baseImageData), 2.3),
+    applyThreshold(baseImageData, 125),
+    applyThreshold(baseImageData, 150),
+  ];
+
+  for (const candidate of decodeAttempts) {
+    const decodedText = decodeImageDataWithJsQr(candidate);
+    if (decodedText) {
+      return decodedText;
+    }
+  }
+
+  return "";
+}
+
 async function decodeQrWithBarcodeDetector(image) {
   const BarcodeDetectorCtor = typeof window !== "undefined" ? window.BarcodeDetector : undefined;
   if (!BarcodeDetectorCtor) {
     return "";
   }
 
-  const detector = new BarcodeDetectorCtor({ formats: ["qr_code"] });
-  const detections = await detector.detect(image);
-  return String(detections?.[0]?.rawValue || "").trim();
+  try {
+    const detector = new BarcodeDetectorCtor({ formats: ["qr_code"] });
+    const directDetections = await detector.detect(image);
+    const directResult = String(directDetections?.[0]?.rawValue || "").trim();
+    if (directResult) {
+      return directResult;
+    }
+
+    const resizedCanvas = drawImageToCanvas(image, 2048);
+    const canvasDetections = await detector.detect(resizedCanvas);
+    return String(canvasDetections?.[0]?.rawValue || "").trim();
+  } catch {
+    return "";
+  }
 }
 
 function decodeQrWithJsQr(image) {
-  const sizeAttempts = [0, 2048, 1536, 1024, 768, 512];
+  const sizeAttempts = [2048, 1536, 1024, 768, 512];
+  const centerCropAttempts = [1, 0.92, 0.82, 0.7];
 
   for (const maxDimension of sizeAttempts) {
     try {
-      const canvas = drawImageToCanvas(image, maxDimension);
-      const context = canvas.getContext("2d", { willReadFrequently: true });
-      if (!context) {
-        continue;
-      }
+      const baseCanvas = drawImageToCanvas(image, maxDimension);
 
-      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-      const decoded = jsQR(imageData.data, imageData.width, imageData.height, {
-        inversionAttempts: "attemptBoth",
-      });
-
-      const decodedText = String(decoded?.data || "").trim();
-      if (decodedText) {
-        return decodedText;
+      for (const cropRatio of centerCropAttempts) {
+        const candidateCanvas = cropCanvasFromCenter(baseCanvas, cropRatio);
+        const decodedText = decodeCanvasWithJsQr(candidateCanvas);
+        if (decodedText) {
+          return decodedText;
+        }
       }
     } catch {
       // Continue to next decoding strategy.
@@ -195,13 +326,36 @@ function decodeQrWithJsQr(image) {
 async function decodeQrWithZxing(image) {
   try {
     const { BrowserQRCodeReader } = await import("@zxing/browser");
-    const canvas = drawImageToCanvas(image, 2048);
-    const imageUrl = canvas.toDataURL("image/png");
+    const sizeAttempts = [2048, 1536, 1024];
+    const centerCropAttempts = [1, 0.9, 0.8];
 
     const reader = new BrowserQRCodeReader();
     try {
-      const result = await reader.decodeFromImageUrl(imageUrl);
-      return String(result?.getText?.() || "").trim();
+      for (const maxDimension of sizeAttempts) {
+        let baseCanvas;
+        try {
+          baseCanvas = drawImageToCanvas(image, maxDimension);
+        } catch {
+          continue;
+        }
+
+        for (const cropRatio of centerCropAttempts) {
+          const candidateCanvas = cropCanvasFromCenter(baseCanvas, cropRatio);
+          const imageUrl = candidateCanvas.toDataURL("image/png");
+
+          try {
+            const result = await reader.decodeFromImageUrl(imageUrl);
+            const decodedText = String(result?.getText?.() || "").trim();
+            if (decodedText) {
+              return decodedText;
+            }
+          } catch {
+            // Continue to the next candidate image.
+          }
+        }
+      }
+
+      return "";
     } finally {
       reader.reset();
     }
