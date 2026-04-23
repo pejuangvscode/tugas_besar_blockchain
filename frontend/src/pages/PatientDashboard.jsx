@@ -47,6 +47,40 @@ function buildInsuranceWorkflowContext({ patientWallet, proverWallet }) {
   };
 }
 
+function getQrEncodingConfig(payloadText) {
+  const payloadLength = String(payloadText || "").length;
+
+  if (payloadLength > 2600) {
+    return {
+      width: 1900,
+      margin: 4,
+      errorCorrectionLevel: "L",
+    };
+  }
+
+  if (payloadLength > 1800) {
+    return {
+      width: 1500,
+      margin: 4,
+      errorCorrectionLevel: "L",
+    };
+  }
+
+  if (payloadLength > 1200) {
+    return {
+      width: 1200,
+      margin: 4,
+      errorCorrectionLevel: "M",
+    };
+  }
+
+  return {
+    width: 880,
+    margin: 3,
+    errorCorrectionLevel: "M",
+  };
+}
+
 export default function PatientDashboard() {
   const [records, setRecords] = useState([]);
   const [selectedRecordIds, setSelectedRecordIds] = useState([]);
@@ -316,18 +350,18 @@ export default function PatientDashboard() {
       const token = encodeVerificationToken(verificationPackage);
       const verifierUrl = new URL("/verifier", window.location.origin);
       verifierUrl.searchParams.set("token", token);
+      const qrPayload = verifierUrl.toString();
+      const qrConfig = getQrEncodingConfig(qrPayload);
 
-      const qrImageDataUrl = await QRCode.toDataURL(verifierUrl.toString(), {
-        width: 280,
-        margin: 1,
-        errorCorrectionLevel: "M",
-      });
+      const qrImageDataUrl = await QRCode.toDataURL(qrPayload, qrConfig);
 
       setShareQr({
         recordId: record.id,
         token,
-        verifierUrl: verifierUrl.toString(),
+        verifierUrl: qrPayload,
         qrImageDataUrl,
+        qrPixelWidth: qrConfig.width,
+        qrPayloadLength: qrPayload.length,
       });
     } catch (error) {
       setErrorMessage(error?.message || "Failed to generate share QR.");
@@ -806,6 +840,9 @@ export default function PatientDashboard() {
                 className="mx-auto h-64 w-64 rounded-xl border border-white/10 bg-white p-2"
               />
               <p className="mt-3 text-center text-xs text-slate-300">Record #{shareQr.recordId}</p>
+              <p className="mt-1 text-center text-[11px] text-slate-400">
+                QR {shareQr.qrPixelWidth || "-"} px, payload {shareQr.qrPayloadLength || "-"} chars
+              </p>
             </div>
 
             <div>

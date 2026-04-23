@@ -120,6 +120,22 @@ function loadImageElementFromFile(file) {
   });
 }
 
+async function loadImageBitmapFromFile(file) {
+  if (typeof createImageBitmap !== "function") {
+    return null;
+  }
+
+  try {
+    return await createImageBitmap(file, { imageOrientation: "from-image" });
+  } catch {
+    try {
+      return await createImageBitmap(file);
+    } catch {
+      return null;
+    }
+  }
+}
+
 function drawImageToCanvas(image, maxDimension = 0) {
   const naturalWidth = image.naturalWidth || image.width;
   const naturalHeight = image.naturalHeight || image.height;
@@ -149,6 +165,9 @@ function drawImageToCanvas(image, maxDimension = 0) {
     throw new Error("Unable to read image pixels for QR decoding.");
   }
 
+  // Keep sharp square edges during resize. Dense QR modules become unreadable when interpolated.
+  context.imageSmoothingEnabled = false;
+  context.imageSmoothingQuality = "low";
   context.drawImage(image, 0, 0, targetWidth, targetHeight);
   return canvas;
 }
@@ -257,16 +276,67 @@ function rotateCanvas(sourceCanvas, angleDegrees = 0) {
   return canvas;
 }
 
+function buildQrGridCanvases(baseCanvas, windowRatio) {
+  const safeWindowRatio = Math.min(1, Math.max(0.3, windowRatio));
+  const centeredOffset = (1 - safeWindowRatio) / 2;
+  const positionRatios = [0, centeredOffset, 1 - safeWindowRatio];
+  const canvases = [];
+
+  for (const topRatio of positionRatios) {
+    for (const leftRatio of positionRatios) {
+      canvases.push(
+        cropCanvasRegion(baseCanvas, leftRatio, topRatio, safeWindowRatio, safeWindowRatio)
+      );
+    }
+  }
+
+  return canvases;
+}
+
 function buildQrFocusCanvases(baseCanvas) {
   return [
     baseCanvas,
     cropCanvasFromCenter(baseCanvas, 0.92),
     cropCanvasFromCenter(baseCanvas, 0.8),
-    cropCanvasRegion(baseCanvas, 0, 0, 0.68, 0.68),
-    cropCanvasRegion(baseCanvas, 0.32, 0, 0.68, 0.68),
-    cropCanvasRegion(baseCanvas, 0, 0.32, 0.68, 0.68),
-    cropCanvasRegion(baseCanvas, 0.32, 0.32, 0.68, 0.68),
+    ...buildQrGridCanvases(baseCanvas, 0.68),
   ];
+}
+
+function buildQrExtendedCanvases(baseCanvas) {
+  return [...buildQrFocusCanvases(baseCanvas), ...buildQrGridCanvases(baseCanvas, 0.5)];
+}
+
+function upscaleCanvas(sourceCanvas, scaleFactor = 2, maxDimension = 2200) {
+  const safeScaleFactor = Math.max(1, scaleFactor);
+  const scaledWidth = Math.max(1, Math.round(sourceCanvas.width * safeScaleFactor));
+  const scaledHeight = Math.max(1, Math.round(sourceCanvas.height * safeScaleFactor));
+  const largest = Math.max(scaledWidth, scaledHeight);
+
+  let targetWidth = scaledWidth;
+  let targetHeight = scaledHeight;
+
+  if (largest > maxDimension) {
+    const resizeRatio = maxDimension / largest;
+    targetWidth = Math.max(1, Math.round(scaledWidth * resizeRatio));
+    targetHeight = Math.max(1, Math.round(scaledHeight * resizeRatio));
+  }
+
+  if (targetWidth <= sourceCanvas.width && targetHeight <= sourceCanvas.height) {
+    return sourceCanvas;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    return sourceCanvas;
+  }
+
+  context.imageSmoothingEnabled = false;
+  context.drawImage(sourceCanvas, 0, 0, targetWidth, targetHeight);
+  return canvas;
 }
 
 function clampByte(value) {
@@ -400,7 +470,7 @@ async function decodeQrWithBarcodeDetector(image) {
 }
 
 function decodeQrWithJsQr(image) {
-  const sizeAttempts = [2048, 1536, 1024, 768, 512];
+  const sizeAttempts = [0, 2048, 1536, 1024, 768, 512];
 
   for (const maxDimension of sizeAttempts) {
     try {
@@ -429,16 +499,49 @@ function decodeQrWithJsQr(image) {
     }
   }
 
+  try {
+    const extendedBaseCanvas = drawImageToCanvas(image, 1536);
+    const extendedCanvases = buildQrExtendedCanvases(extendedBaseCanvas);
+
+    for (const candidateCanvas of extendedCanvases) {
+      const decodedText = decodeCanvasWithJsQr(candidateCanvas);
+      if (decodedText) {
+        return decodedText;
+      }
+
+      const shouldUpscale = Math.min(candidateCanvas.width, candidateCanvas.height) < 420;
+      if (shouldUpscale) {
+        const upscaledCanvas = upscaleCanvas(candidateCanvas, 2.2, 2200);
+        const upscaledDecodedText = decodeCanvasWithJsQr(upscaledCanvas);
+        if (upscaledDecodedText) {
+          return upscaledDecodedText;
+        }
+      }
+    }
+  } catch {
+    // Continue to next decoding strategy.
+  }
+
   return "";
 }
 
 async function decodeQrWithZxing(image) {
   try {
-    const { BrowserQRCodeReader } = await import("@zxing/browser");
-    const sizeAttempts = [2048, 1536, 1024];
+    const [{ BrowserMultiFormatReader }, { BarcodeFormat, DecodeHintType }] = await Promise.all([
+      import("@zxing/browser"),
+      import("@zxing/library"),
+    ]);
+    const sizeAttempts = [0, 2048, 1536, 1024, 768];
     const rotationAngles = [0, 90, 180, 270];
+    const hints = new Map();
 
-    const reader = new BrowserQRCodeReader();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    if (DecodeHintType.ALSO_INVERTED) {
+      hints.set(DecodeHintType.ALSO_INVERTED, true);
+    }
+
+    const reader = new BrowserMultiFormatReader(hints);
     try {
       for (const maxDimension of sizeAttempts) {
         let baseCanvas;
@@ -448,23 +551,32 @@ async function decodeQrWithZxing(image) {
           continue;
         }
 
-        const focusCanvases = buildQrFocusCanvases(baseCanvas);
+        const focusCanvases =
+          maxDimension >= 1536 ? buildQrExtendedCanvases(baseCanvas) : buildQrFocusCanvases(baseCanvas);
 
         for (const angle of rotationAngles) {
-          const angleCandidates = angle === 0 ? focusCanvases : focusCanvases.slice(0, 3);
+          const angleCandidates = angle === 0 ? focusCanvases : focusCanvases.slice(0, 6);
 
           for (const candidateCanvas of angleCandidates) {
             const workingCanvas = angle ? rotateCanvas(candidateCanvas, angle) : candidateCanvas;
-            const imageUrl = workingCanvas.toDataURL("image/png");
+            const canvasesToTry = [workingCanvas];
 
-            try {
-              const result = await reader.decodeFromImageUrl(imageUrl);
-              const decodedText = String(result?.getText?.() || "").trim();
-              if (decodedText) {
-                return decodedText;
+            if (Math.min(workingCanvas.width, workingCanvas.height) < 420) {
+              canvasesToTry.push(upscaleCanvas(workingCanvas, 2.2, 2200));
+            }
+
+            for (const scanCanvas of canvasesToTry) {
+              const imageUrl = scanCanvas.toDataURL("image/png");
+
+              try {
+                const result = await reader.decodeFromImageUrl(imageUrl);
+                const decodedText = String(result?.getText?.() || "").trim();
+                if (decodedText) {
+                  return decodedText;
+                }
+              } catch {
+                // Continue to the next candidate image.
               }
-            } catch {
-              // Continue to the next candidate image.
             }
           }
         }
@@ -480,21 +592,31 @@ async function decodeQrWithZxing(image) {
 }
 
 async function decodeQrFromImageFile(file) {
-  const image = await loadImageElementFromFile(file);
+  const fallbackImage = await loadImageElementFromFile(file);
+  const bitmapSource = await loadImageBitmapFromFile(file);
+  const decodeSources = [bitmapSource, fallbackImage].filter(Boolean);
 
-  const barcodeDetectorResult = await decodeQrWithBarcodeDetector(image);
-  if (barcodeDetectorResult) {
-    return barcodeDetectorResult;
-  }
+  try {
+    for (const source of decodeSources) {
+      const barcodeDetectorResult = await decodeQrWithBarcodeDetector(source);
+      if (barcodeDetectorResult) {
+        return barcodeDetectorResult;
+      }
 
-  const jsQrResult = decodeQrWithJsQr(image);
-  if (jsQrResult) {
-    return jsQrResult;
-  }
+      const jsQrResult = decodeQrWithJsQr(source);
+      if (jsQrResult) {
+        return jsQrResult;
+      }
 
-  const zxingResult = await decodeQrWithZxing(image);
-  if (zxingResult) {
-    return zxingResult;
+      const zxingResult = await decodeQrWithZxing(source);
+      if (zxingResult) {
+        return zxingResult;
+      }
+    }
+  } finally {
+    if (bitmapSource && typeof bitmapSource.close === "function") {
+      bitmapSource.close();
+    }
   }
 
   throw new Error(
