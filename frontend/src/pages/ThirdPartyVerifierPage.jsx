@@ -188,6 +188,87 @@ function cropCanvasFromCenter(sourceCanvas, cropRatio = 1) {
   return canvas;
 }
 
+function cropCanvasRegion(sourceCanvas, leftRatio, topRatio, widthRatio, heightRatio) {
+  const normalizedWidthRatio = Math.min(1, Math.max(0.2, widthRatio));
+  const normalizedHeightRatio = Math.min(1, Math.max(0.2, heightRatio));
+  const normalizedLeftRatio = Math.min(1, Math.max(0, leftRatio));
+  const normalizedTopRatio = Math.min(1, Math.max(0, topRatio));
+
+  const cropWidth = Math.max(1, Math.round(sourceCanvas.width * normalizedWidthRatio));
+  const cropHeight = Math.max(1, Math.round(sourceCanvas.height * normalizedHeightRatio));
+  const maxSourceX = Math.max(0, sourceCanvas.width - cropWidth);
+  const maxSourceY = Math.max(0, sourceCanvas.height - cropHeight);
+  const sourceX = Math.min(maxSourceX, Math.round(sourceCanvas.width * normalizedLeftRatio));
+  const sourceY = Math.min(maxSourceY, Math.round(sourceCanvas.height * normalizedTopRatio));
+
+  if (
+    sourceX === 0 &&
+    sourceY === 0 &&
+    cropWidth === sourceCanvas.width &&
+    cropHeight === sourceCanvas.height
+  ) {
+    return sourceCanvas;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = cropWidth;
+  canvas.height = cropHeight;
+
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    return sourceCanvas;
+  }
+
+  context.drawImage(
+    sourceCanvas,
+    sourceX,
+    sourceY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    cropWidth,
+    cropHeight
+  );
+
+  return canvas;
+}
+
+function rotateCanvas(sourceCanvas, angleDegrees = 0) {
+  const normalizedAngle = ((angleDegrees % 360) + 360) % 360;
+  if (!normalizedAngle) {
+    return sourceCanvas;
+  }
+
+  const isQuarterTurn = normalizedAngle === 90 || normalizedAngle === 270;
+  const canvas = document.createElement("canvas");
+  canvas.width = isQuarterTurn ? sourceCanvas.height : sourceCanvas.width;
+  canvas.height = isQuarterTurn ? sourceCanvas.width : sourceCanvas.height;
+
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    return sourceCanvas;
+  }
+
+  context.translate(canvas.width / 2, canvas.height / 2);
+  context.rotate((normalizedAngle * Math.PI) / 180);
+  context.drawImage(sourceCanvas, -sourceCanvas.width / 2, -sourceCanvas.height / 2);
+
+  return canvas;
+}
+
+function buildQrFocusCanvases(baseCanvas) {
+  return [
+    baseCanvas,
+    cropCanvasFromCenter(baseCanvas, 0.92),
+    cropCanvasFromCenter(baseCanvas, 0.8),
+    cropCanvasRegion(baseCanvas, 0, 0, 0.68, 0.68),
+    cropCanvasRegion(baseCanvas, 0.32, 0, 0.68, 0.68),
+    cropCanvasRegion(baseCanvas, 0, 0.32, 0.68, 0.68),
+    cropCanvasRegion(baseCanvas, 0.32, 0.32, 0.68, 0.68),
+  ];
+}
+
 function clampByte(value) {
   return Math.max(0, Math.min(255, Math.round(value)));
 }
@@ -293,8 +374,26 @@ async function decodeQrWithBarcodeDetector(image) {
     }
 
     const resizedCanvas = drawImageToCanvas(image, 2048);
-    const canvasDetections = await detector.detect(resizedCanvas);
-    return String(canvasDetections?.[0]?.rawValue || "").trim();
+    const focusCanvases = buildQrFocusCanvases(resizedCanvas);
+
+    for (const candidateCanvas of focusCanvases) {
+      const detections = await detector.detect(candidateCanvas);
+      const decodedText = String(detections?.[0]?.rawValue || "").trim();
+      if (decodedText) {
+        return decodedText;
+      }
+    }
+
+    for (const angle of [90, 180, 270]) {
+      const rotatedCanvas = rotateCanvas(resizedCanvas, angle);
+      const detections = await detector.detect(rotatedCanvas);
+      const decodedText = String(detections?.[0]?.rawValue || "").trim();
+      if (decodedText) {
+        return decodedText;
+      }
+    }
+
+    return "";
   } catch {
     return "";
   }
@@ -302,17 +401,27 @@ async function decodeQrWithBarcodeDetector(image) {
 
 function decodeQrWithJsQr(image) {
   const sizeAttempts = [2048, 1536, 1024, 768, 512];
-  const centerCropAttempts = [1, 0.92, 0.82, 0.7];
 
   for (const maxDimension of sizeAttempts) {
     try {
       const baseCanvas = drawImageToCanvas(image, maxDimension);
+      const focusCanvases = buildQrFocusCanvases(baseCanvas);
 
-      for (const cropRatio of centerCropAttempts) {
-        const candidateCanvas = cropCanvasFromCenter(baseCanvas, cropRatio);
+      for (const candidateCanvas of focusCanvases) {
         const decodedText = decodeCanvasWithJsQr(candidateCanvas);
         if (decodedText) {
           return decodedText;
+        }
+      }
+
+      const rotatedCandidates = focusCanvases.slice(0, 3);
+      for (const angle of [90, 180, 270]) {
+        for (const candidateCanvas of rotatedCandidates) {
+          const rotatedCanvas = rotateCanvas(candidateCanvas, angle);
+          const decodedText = decodeCanvasWithJsQr(rotatedCanvas);
+          if (decodedText) {
+            return decodedText;
+          }
         }
       }
     } catch {
@@ -327,7 +436,7 @@ async function decodeQrWithZxing(image) {
   try {
     const { BrowserQRCodeReader } = await import("@zxing/browser");
     const sizeAttempts = [2048, 1536, 1024];
-    const centerCropAttempts = [1, 0.9, 0.8];
+    const rotationAngles = [0, 90, 180, 270];
 
     const reader = new BrowserQRCodeReader();
     try {
@@ -339,18 +448,24 @@ async function decodeQrWithZxing(image) {
           continue;
         }
 
-        for (const cropRatio of centerCropAttempts) {
-          const candidateCanvas = cropCanvasFromCenter(baseCanvas, cropRatio);
-          const imageUrl = candidateCanvas.toDataURL("image/png");
+        const focusCanvases = buildQrFocusCanvases(baseCanvas);
 
-          try {
-            const result = await reader.decodeFromImageUrl(imageUrl);
-            const decodedText = String(result?.getText?.() || "").trim();
-            if (decodedText) {
-              return decodedText;
+        for (const angle of rotationAngles) {
+          const angleCandidates = angle === 0 ? focusCanvases : focusCanvases.slice(0, 3);
+
+          for (const candidateCanvas of angleCandidates) {
+            const workingCanvas = angle ? rotateCanvas(candidateCanvas, angle) : candidateCanvas;
+            const imageUrl = workingCanvas.toDataURL("image/png");
+
+            try {
+              const result = await reader.decodeFromImageUrl(imageUrl);
+              const decodedText = String(result?.getText?.() || "").trim();
+              if (decodedText) {
+                return decodedText;
+              }
+            } catch {
+              // Continue to the next candidate image.
             }
-          } catch {
-            // Continue to the next candidate image.
           }
         }
       }
