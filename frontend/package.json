@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@zxing/browser": "^0.1.5",
     "buffer": "^6.0.3",
     "circomlibjs": "^0.1.7",
     "ethers": "^6.13.4",

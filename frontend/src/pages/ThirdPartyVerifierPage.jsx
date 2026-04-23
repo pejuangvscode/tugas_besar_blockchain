@@ -120,49 +120,117 @@ function loadImageElementFromFile(file) {
   });
 }
 
-async function decodeQrFromImageFile(file) {
-  const image = await loadImageElementFromFile(file);
+function drawImageToCanvas(image, maxDimension = 0) {
+  const naturalWidth = image.naturalWidth || image.width;
+  const naturalHeight = image.naturalHeight || image.height;
 
-  const BarcodeDetectorCtor = typeof window !== "undefined" ? window.BarcodeDetector : undefined;
-  if (BarcodeDetectorCtor) {
-    const detector = new BarcodeDetectorCtor({ formats: ["qr_code"] });
-    const detections = await detector.detect(image);
-    const detectedRawValue = String(detections?.[0]?.rawValue || "").trim();
+  if (!naturalWidth || !naturalHeight) {
+    throw new Error("Invalid QR image dimensions.");
+  }
 
-    if (detectedRawValue) {
-      return detectedRawValue;
+  let targetWidth = naturalWidth;
+  let targetHeight = naturalHeight;
+
+  if (maxDimension > 0) {
+    const largest = Math.max(naturalWidth, naturalHeight);
+    if (largest > maxDimension) {
+      const ratio = maxDimension / largest;
+      targetWidth = Math.max(1, Math.round(naturalWidth * ratio));
+      targetHeight = Math.max(1, Math.round(naturalHeight * ratio));
     }
   }
 
   const canvas = document.createElement("canvas");
-  const width = image.naturalWidth || image.width;
-  const height = image.naturalHeight || image.height;
-
-  if (!width || !height) {
-    throw new Error("Invalid QR image dimensions.");
-  }
-
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
 
   const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) {
     throw new Error("Unable to read image pixels for QR decoding.");
   }
 
-  context.drawImage(image, 0, 0, width, height);
-  const imageData = context.getImageData(0, 0, width, height);
+  context.drawImage(image, 0, 0, targetWidth, targetHeight);
+  return canvas;
+}
 
-  const decoded = jsQR(imageData.data, imageData.width, imageData.height, {
-    inversionAttempts: "attemptBoth",
-  });
-
-  const decodedText = String(decoded?.data || "").trim();
-  if (!decodedText) {
-    throw new Error("QR code was not detected in the uploaded image.");
+async function decodeQrWithBarcodeDetector(image) {
+  const BarcodeDetectorCtor = typeof window !== "undefined" ? window.BarcodeDetector : undefined;
+  if (!BarcodeDetectorCtor) {
+    return "";
   }
 
-  return decodedText;
+  const detector = new BarcodeDetectorCtor({ formats: ["qr_code"] });
+  const detections = await detector.detect(image);
+  return String(detections?.[0]?.rawValue || "").trim();
+}
+
+function decodeQrWithJsQr(image) {
+  const sizeAttempts = [0, 2048, 1536, 1024, 768, 512];
+
+  for (const maxDimension of sizeAttempts) {
+    try {
+      const canvas = drawImageToCanvas(image, maxDimension);
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) {
+        continue;
+      }
+
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const decoded = jsQR(imageData.data, imageData.width, imageData.height, {
+        inversionAttempts: "attemptBoth",
+      });
+
+      const decodedText = String(decoded?.data || "").trim();
+      if (decodedText) {
+        return decodedText;
+      }
+    } catch {
+      // Continue to next decoding strategy.
+    }
+  }
+
+  return "";
+}
+
+async function decodeQrWithZxing(image) {
+  try {
+    const { BrowserQRCodeReader } = await import("@zxing/browser");
+    const canvas = drawImageToCanvas(image, 2048);
+    const imageUrl = canvas.toDataURL("image/png");
+
+    const reader = new BrowserQRCodeReader();
+    try {
+      const result = await reader.decodeFromImageUrl(imageUrl);
+      return String(result?.getText?.() || "").trim();
+    } finally {
+      reader.reset();
+    }
+  } catch {
+    return "";
+  }
+}
+
+async function decodeQrFromImageFile(file) {
+  const image = await loadImageElementFromFile(file);
+
+  const barcodeDetectorResult = await decodeQrWithBarcodeDetector(image);
+  if (barcodeDetectorResult) {
+    return barcodeDetectorResult;
+  }
+
+  const jsQrResult = decodeQrWithJsQr(image);
+  if (jsQrResult) {
+    return jsQrResult;
+  }
+
+  const zxingResult = await decodeQrWithZxing(image);
+  if (zxingResult) {
+    return zxingResult;
+  }
+
+  throw new Error(
+    "QR code was not detected in the uploaded image. Try a clearer/cropped QR image or paste certificate link/token manually."
+  );
 }
 
 const PRIMARY_ACTION_CLASS =
