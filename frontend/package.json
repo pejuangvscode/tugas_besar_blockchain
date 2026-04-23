@@ -13,6 +13,7 @@
     "circomlibjs": "^0.1.7",
     "ethers": "^6.13.4",
     "js-sha256": "^0.11.1",
+    "jsqr": "^1.4.0",
     "merkletreejs": "^0.4.1",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",

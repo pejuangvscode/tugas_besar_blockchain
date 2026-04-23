@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ethers } from "ethers";
 import { useSearchParams } from "react-router-dom";
+import jsQR from "jsqr";
 
 import { getReadOnlyProvider, getRegistryContract } from "../services/contract";
 import { verifyMerkleProofInBrowser } from "../services/merkle";
@@ -100,6 +101,70 @@ function normalizeCertificatePayload(rawPayload) {
   };
 }
 
+function loadImageElementFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Unable to read uploaded image."));
+    };
+
+    image.src = objectUrl;
+  });
+}
+
+async function decodeQrFromImageFile(file) {
+  const image = await loadImageElementFromFile(file);
+
+  const BarcodeDetectorCtor = typeof window !== "undefined" ? window.BarcodeDetector : undefined;
+  if (BarcodeDetectorCtor) {
+    const detector = new BarcodeDetectorCtor({ formats: ["qr_code"] });
+    const detections = await detector.detect(image);
+    const detectedRawValue = String(detections?.[0]?.rawValue || "").trim();
+
+    if (detectedRawValue) {
+      return detectedRawValue;
+    }
+  }
+
+  const canvas = document.createElement("canvas");
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+
+  if (!width || !height) {
+    throw new Error("Invalid QR image dimensions.");
+  }
+
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    throw new Error("Unable to read image pixels for QR decoding.");
+  }
+
+  context.drawImage(image, 0, 0, width, height);
+  const imageData = context.getImageData(0, 0, width, height);
+
+  const decoded = jsQR(imageData.data, imageData.width, imageData.height, {
+    inversionAttempts: "attemptBoth",
+  });
+
+  const decodedText = String(decoded?.data || "").trim();
+  if (!decodedText) {
+    throw new Error("QR code was not detected in the uploaded image.");
+  }
+
+  return decodedText;
+}
+
 const PRIMARY_ACTION_CLASS =
   "rounded-full border border-blue-600 bg-blue-600 px-4 py-2 text-sm font-semibold text-blue-50 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60";
 
@@ -177,24 +242,7 @@ export default function ThirdPartyVerifierPage() {
       setErrorMessage("");
       setInfoMessage("");
 
-      if (!window.BarcodeDetector) {
-        throw new Error(
-          "Browser does not support QR decoding from image. Paste certificate link/token manually."
-        );
-      }
-
-      const detector = new window.BarcodeDetector({ formats: ["qr_code"] });
-      const bitmap = await createImageBitmap(selectedFile);
-
-      let detectedRawValue = "";
-      try {
-        const detections = await detector.detect(bitmap);
-        detectedRawValue = String(detections?.[0]?.rawValue || "").trim();
-      } finally {
-        if (typeof bitmap.close === "function") {
-          bitmap.close();
-        }
-      }
+      const detectedRawValue = await decodeQrFromImageFile(selectedFile);
 
       if (!detectedRawValue) {
         throw new Error("QR code was not detected in the uploaded image.");
